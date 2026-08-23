@@ -8,6 +8,8 @@ under `packages/plugin` (OpenCode) and `packages/pi-plugin` (Pi/OMP).
 
 - `core-plugin/` owns the host-neutral transcript, protocol, token-pressure,
   budget, and scheduling policy.
+- `runtime/` implements the independent `context.compose` / `turn.observe`
+  process and durable host-neutral session state.
 - `hermes-plugin/` is a Hermes `ContextEngine` Adapter for that Interface.
 
 ## Isolation rules

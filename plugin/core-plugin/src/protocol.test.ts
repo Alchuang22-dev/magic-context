@@ -4,7 +4,9 @@ import {
 	CORE_PROTOCOL_VERSION,
 	type ComposeContextRequest,
 	type ContextPlan,
+	type ContextRuntimeCall,
 	InvalidContextPlanError,
+	type ObserveTurnRequest,
 	resolveCapabilities,
 	validateContextPlan,
 } from "./protocol";
@@ -57,6 +59,29 @@ describe("resolveCapabilities", () => {
 			systemSuffixInjection: false,
 			promptCacheFacts: false,
 		});
+	});
+});
+
+describe("runtime protocol", () => {
+	test("represents compose and idempotent turn observation calls", () => {
+		const observation: ObserveTurnRequest = {
+			protocolVersion: CORE_PROTOCOL_VERSION,
+			observationId: "obs-1",
+			host: "test",
+			sessionId: "session-1",
+			observedAtMs: 1_000,
+			messages: request.messages,
+			outcome: { interrupted: false, failed: false },
+		};
+		const calls: ContextRuntimeCall[] = [
+			{ method: "context.compose", params: request },
+			{ method: "turn.observe", params: observation },
+		];
+
+		expect(calls.map((call) => call.method)).toEqual([
+			"context.compose",
+			"turn.observe",
+		]);
 	});
 });
 

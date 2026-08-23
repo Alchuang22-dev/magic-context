@@ -3,12 +3,16 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import shutil
 import sys
+import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_CLI = PLUGIN_ROOT.parent / "runtime" / "dist" / "cli.js"
 HERMES_ROOT = PLUGIN_ROOT.parents[2] / "hermes-agent"
 if HERMES_ROOT.exists():
     sys.path.insert(0, str(HERMES_ROOT))
@@ -95,6 +99,13 @@ class MagicContextEngineTests(unittest.TestCase):
         second, _ = adapter.snapshot_messages(messages)
         self.assertEqual(first, second)
         self.assertNotEqual(first[0]["id"], first[1]["id"])
+
+    def test_tool_results_are_not_duplicated_in_the_canonical_snapshot(self):
+        canonical, _ = adapter.snapshot_messages(
+            [{"role": "tool", "tool_call_id": "call-1", "content": "result"}]
+        )
+        self.assertEqual(len(canonical[0]["content"]), 1)
+        self.assertEqual(canonical[0]["content"][0]["kind"], "tool_result")
 
     def test_in_budget_without_runtime_is_byte_equivalent(self):
         messages = [
@@ -187,6 +198,132 @@ class MagicContextEngineTests(unittest.TestCase):
         result = json.loads(engine.handle_tool_call("ctx_status", {}))
         self.assertEqual(result["engine"], "magic-context")
         self.assertFalse(result["runtime_available"])
+
+    def test_turn_observe_sends_a_canonical_idempotent_observation(self):
+        observed = threading.Event()
+
+        def responder(method, request):
+            self.assertEqual(method, "turn.observe")
+            self.assertEqual(request["observationId"], "turn-7")
+            self.assertEqual(request["sessionId"], "session-7")
+            self.assertEqual(request["messages"][0]["role"], "user")
+            self.assertEqual(request["messages"][0]["content"][0]["kind"], "text")
+            self.assertEqual(request["usage"]["inputTokens"], 120)
+            self.assertEqual(request["usage"]["contextLimitTokens"], 4000)
+            self.assertEqual(request["outcome"]["exitReason"], "complete")
+            observed.set()
+            return {
+                "protocolVersion": 1,
+                "observationId": "turn-7",
+                "sessionId": "session-7",
+                "accepted": True,
+                "revision": 1,
+                "observedAtMs": request["observedAtMs"],
+            }
+
+        runtime = FakeRuntime(responder)
+        engine = MagicContextEngine(runtime=runtime, context_length=4000)
+        engine.on_session_start("session-7", model="openai/test")
+        engine.on_turn_complete(
+            [{"role": "user", "content": "hello"}],
+            {"input_tokens": 120, "output_tokens": 8},
+            turn_id="turn-7",
+            turn_exit_reason="complete",
+        )
+
+        self.assertTrue(observed.wait(1.0))
+
+    def test_turn_observe_serializes_completed_turns_without_dropping_them(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_finished = threading.Event()
+
+        def responder(method, request):
+            self.assertEqual(method, "turn.observe")
+            if request["observationId"] == "turn-1":
+                first_started.set()
+                self.assertTrue(release_first.wait(1.0))
+            if request["observationId"] == "turn-2":
+                second_finished.set()
+            return {
+                "protocolVersion": 1,
+                "observationId": request["observationId"],
+                "sessionId": request["sessionId"],
+                "accepted": True,
+                "revision": 1,
+                "observedAtMs": request["observedAtMs"],
+            }
+
+        runtime = FakeRuntime(responder)
+        engine = MagicContextEngine(runtime=runtime, context_length=4000)
+        engine.on_session_start("session-queue")
+        engine.on_turn_complete(
+            [{"role": "user", "content": "first"}],
+            {"input_tokens": 10},
+            turn_id="turn-1",
+        )
+        self.assertTrue(first_started.wait(1.0))
+        engine.on_turn_complete(
+            [{"role": "user", "content": "second"}],
+            {"input_tokens": 20},
+            turn_id="turn-2",
+        )
+        release_first.set()
+
+        self.assertTrue(second_finished.wait(1.0))
+        self.assertEqual(
+            [request["observationId"] for method, request in runtime.calls if method == "turn.observe"],
+            ["turn-1", "turn-2"],
+        )
+
+    @unittest.skipUnless(shutil.which("node") and RUNTIME_CLI.exists(), "built runtime required")
+    def test_real_runtime_command_round_trips_compose_and_observe(self):
+        node = shutil.which("node")
+        assert node
+        with tempfile.TemporaryDirectory(prefix="magic-context-runtime-") as state_dir:
+            bridge = module.RuntimeBridge(
+                (node, str(RUNTIME_CLI), "--state-dir", state_dir),
+                timeout_seconds=5.0,
+            )
+            engine = MagicContextEngine(runtime=bridge, context_length=4000)
+            engine.on_session_start("session-real")
+            messages = [{"role": "user", "content": "hello runtime"}]
+
+            self.assertEqual(engine.select_context(messages, budget_tokens=4000), messages)
+
+            tool_messages = [
+                {"role": "user", "content": "read a file"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-real",
+                            "type": "function",
+                            "function": {"name": "read", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-real", "content": "done"},
+            ]
+            self.assertEqual(
+                engine.select_context(tool_messages, budget_tokens=4000),
+                tool_messages,
+            )
+
+            payload = adapter.observe_request(
+                messages,
+                observation_id="turn-real",
+                session_id="session-real",
+                observed_at_ms=1000,
+                usage={"input_tokens": 20, "output_tokens": 4},
+                context_limit_tokens=4000,
+            )
+            first = bridge.call("turn.observe", payload)
+            duplicate = bridge.call("turn.observe", payload)
+            self.assertTrue(first["accepted"])
+            self.assertFalse(duplicate["accepted"])
+            self.assertEqual(first["revision"], duplicate["revision"])
 
     def test_invalid_runtime_plan_falls_back_without_escaping_to_hermes(self):
         def responder(_method, request):

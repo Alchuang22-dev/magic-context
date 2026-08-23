@@ -12,6 +12,10 @@ New agent integrations should implement `AgentContextAdapter` and exchange a
 `ComposeContextRequest` / `ContextPlan` with the Magic Context runtime. They
 must not import implementation files from another host plugin.
 
+Completed turns cross the same seam as canonical `ObserveTurnRequest` values.
+`observationId` is idempotent within a host session, allowing one-shot and
+long-running runtime transports to share the same state semantics.
+
 ## Context policy
 
 `@cortexkit/magic-context-core-plugin/context-policy` owns the deterministic
@@ -32,6 +36,8 @@ persisting the returned state. This package is intentionally isolated from the
 existing OpenCode and Pi packages; future host adapters consume its public
 Interface without editing or importing those implementations.
 
-This is still an incremental extraction. Protected-tail selection, reduction,
-m[0]/m[1] composition, memory recall, and historian execution remain in their
-current packages until those subsystems move behind the protocol.
+This is still an incremental extraction. The independent runtime now provides
+a conservative host-neutral protected-tail and bounded-reduction path. Full
+production protected-tail parity, m[0]/m[1] composition, memory recall, and
+historian execution remain in their current packages until those algorithms
+move behind this Interface.

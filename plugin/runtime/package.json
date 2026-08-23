@@ -1,0 +1,41 @@
+{
+  "name": "@cortexkit/magic-context-runtime",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Independent context.compose and turn.observe runtime for Magic Context",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "magic-context-runtime": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/compose.ts src/runtime.ts src/state-store.ts src/validation.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "biome check src",
+    "lint:fix": "biome check --write src"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./state-store": {
+      "types": "./dist/state-store.d.ts",
+      "import": "./dist/state-store.js"
+    }
+  },
+  "dependencies": {
+    "@cortexkit/magic-context-core-plugin": "workspace:*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
+    "@types/bun": "^1.3.10",
+    "typescript": "^5.8.0"
+  }
+}

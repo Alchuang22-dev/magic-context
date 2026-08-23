@@ -113,6 +113,43 @@ export interface ComposeContextRequest {
 	usage?: ContextUsageObservation;
 }
 
+export interface TurnOutcomeObservation {
+	interrupted: boolean;
+	failed: boolean;
+	exitReason?: string;
+}
+
+/** Host-neutral, idempotent record of one completed agent turn. */
+export interface ObserveTurnRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	observationId: string;
+	host: string;
+	sessionId: string;
+	turnId?: string;
+	taskId?: string;
+	projectId?: string;
+	modelKey?: string;
+	observedAtMs: number;
+	messages: CanonicalMessage[];
+	usage?: ContextUsageObservation;
+	outcome: TurnOutcomeObservation;
+}
+
+export interface TurnObservationReceipt {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	observationId: string;
+	sessionId: string;
+	accepted: boolean;
+	revision: number;
+	observedAtMs: number;
+}
+
+export type ContextRuntimeCall =
+	| { method: "context.compose"; params: ComposeContextRequest }
+	| { method: "turn.observe"; params: ObserveTurnRequest };
+
+export type ContextRuntimeResult = ContextPlan | TurnObservationReceipt;
+
 export interface ContextMutation {
 	target: { messageId: string; blockId?: string };
 	operation: ContextMutationKind;

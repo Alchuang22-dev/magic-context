@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from typing import Any, Iterable
 
 PROTOCOL_VERSION = 1
@@ -40,40 +41,41 @@ def _message_id(message: dict[str, Any], ordinal: int) -> str:
 def _canonical_content(message: dict[str, Any]) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     content = message.get("content", "")
-    if isinstance(content, str):
-        blocks.append({"kind": "text", "text": content})
-    elif isinstance(content, list):
-        for index, raw in enumerate(content):
-            if not isinstance(raw, dict):
-                blocks.append({"kind": "opaque", "value": raw})
-                continue
-            kind = raw.get("type")
-            if kind in {"text", "input_text", "output_text"}:
-                blocks.append(
-                    {
-                        "id": str(raw.get("id")) if raw.get("id") is not None else None,
-                        "kind": "text",
-                        "text": str(raw.get("text", "")),
-                    }
-                )
-            elif kind in {"thinking", "reasoning"}:
-                blocks.append(
-                    {
-                        "id": str(raw.get("id")) if raw.get("id") is not None else None,
-                        "kind": "thinking",
-                        "text": str(raw.get("text", raw.get("thinking", ""))),
-                    }
-                )
-            else:
-                blocks.append(
-                    {
-                        "id": str(raw.get("id", index)),
-                        "kind": "opaque",
-                        "value": copy.deepcopy(raw),
-                    }
-                )
-    else:
-        blocks.append({"kind": "opaque", "value": copy.deepcopy(content)})
+    if message.get("role") != "tool":
+        if isinstance(content, str):
+            blocks.append({"kind": "text", "text": content})
+        elif isinstance(content, list):
+            for index, raw in enumerate(content):
+                if not isinstance(raw, dict):
+                    blocks.append({"kind": "opaque", "value": raw})
+                    continue
+                kind = raw.get("type")
+                if kind in {"text", "input_text", "output_text"}:
+                    blocks.append(
+                        {
+                            "id": str(raw.get("id")) if raw.get("id") is not None else None,
+                            "kind": "text",
+                            "text": str(raw.get("text", "")),
+                        }
+                    )
+                elif kind in {"thinking", "reasoning"}:
+                    blocks.append(
+                        {
+                            "id": str(raw.get("id")) if raw.get("id") is not None else None,
+                            "kind": "thinking",
+                            "text": str(raw.get("text", raw.get("thinking", ""))),
+                        }
+                    )
+                else:
+                    blocks.append(
+                        {
+                            "id": str(raw.get("id", index)),
+                            "kind": "opaque",
+                            "value": copy.deepcopy(raw),
+                        }
+                    )
+        else:
+            blocks.append({"kind": "opaque", "value": copy.deepcopy(content)})
 
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list):
@@ -126,6 +128,37 @@ def snapshot_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, An
     return canonical, index_by_id
 
 
+def canonical_usage(
+    usage: dict[str, Any] | None,
+    context_limit_tokens: int = 0,
+) -> dict[str, int | float]:
+    if not isinstance(usage, dict):
+        usage = {}
+    aliases = {
+        "inputTokens": ("input_tokens", "prompt_tokens"),
+        "outputTokens": ("output_tokens", "completion_tokens"),
+        "cacheReadTokens": ("cache_read_tokens",),
+        "cacheWriteTokens": ("cache_write_tokens",),
+        "reasoningTokens": ("reasoning_tokens",),
+    }
+    normalized: dict[str, int | float] = {}
+    for target, sources in aliases.items():
+        value = next(
+            (usage.get(source) for source in sources if usage.get(source) is not None),
+            None,
+        )
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+        ):
+            normalized[target] = value
+    if context_limit_tokens > 0:
+        normalized["contextLimitTokens"] = int(context_limit_tokens)
+    return normalized
+
+
 def compose_request(
     messages: list[dict[str, Any]],
     *,
@@ -141,7 +174,6 @@ def compose_request(
         "requestId": request_id,
         "host": "hermes",
         "sessionId": session_id,
-        "modelKey": model_key,
         "budgetTokens": max(0, int(budget_tokens or 0)),
         "capabilities": {
             "preRequestTransform": True,
@@ -157,16 +189,56 @@ def compose_request(
         },
         "messages": canonical,
     }
-    if usage:
-        request["usage"] = {
-            "inputTokens": usage.get("input_tokens", usage.get("prompt_tokens")),
-            "outputTokens": usage.get("output_tokens", usage.get("completion_tokens")),
-            "cacheReadTokens": usage.get("cache_read_tokens"),
-            "cacheWriteTokens": usage.get("cache_write_tokens"),
-            "reasoningTokens": usage.get("reasoning_tokens"),
-            "contextLimitTokens": budget_tokens or None,
-        }
+    if model_key:
+        request["modelKey"] = str(model_key)
+    normalized_usage = canonical_usage(usage, budget_tokens)
+    if normalized_usage:
+        request["usage"] = normalized_usage
     return request, index_by_id
+
+
+def observe_request(
+    messages: list[dict[str, Any]],
+    *,
+    observation_id: str,
+    session_id: str,
+    observed_at_ms: int,
+    usage: dict[str, Any] | None = None,
+    context_limit_tokens: int = 0,
+    model_key: str | None = None,
+    turn_id: str | None = None,
+    task_id: str | None = None,
+    interrupted: bool = False,
+    failed: bool = False,
+    exit_reason: str | None = None,
+) -> dict[str, Any]:
+    canonical, _ = snapshot_messages(messages)
+    request: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "observationId": observation_id,
+        "host": "hermes",
+        "sessionId": session_id,
+        "observedAtMs": max(0, int(observed_at_ms)),
+        "messages": canonical,
+        "outcome": {
+            "interrupted": bool(interrupted),
+            "failed": bool(failed),
+        },
+    }
+    optional_strings = {
+        "turnId": turn_id,
+        "taskId": task_id,
+        "modelKey": model_key,
+    }
+    for key, value in optional_strings.items():
+        if value:
+            request[key] = str(value)
+    if exit_reason:
+        request["outcome"]["exitReason"] = str(exit_reason)
+    normalized_usage = canonical_usage(usage, context_limit_tokens)
+    if normalized_usage:
+        request["usage"] = normalized_usage
+    return request
 
 
 def _injection_text(content: Any) -> str:

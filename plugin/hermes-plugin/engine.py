@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+from collections import deque
 import copy
 import json
 import logging
 import threading
+import time
 import uuid
 from typing import Any
 
 from agent.context_engine import ContextEngine
 
-from .hermes_adapter import compose_request, estimate_tokens, materialize_plan, safe_fallback
+from .hermes_adapter import (
+    compose_request,
+    estimate_tokens,
+    materialize_plan,
+    observe_request,
+    safe_fallback,
+)
 from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
 
 logger = logging.getLogger(__name__)
@@ -43,7 +51,8 @@ class MagicContextEngine(ContextEngine):
         self._runtime_failures = 0
         self._fallback_count = 0
         self._lock = threading.RLock()
-        self._observe_gate = threading.BoundedSemaphore(1)
+        self._observe_queue: deque[dict[str, Any]] = deque()
+        self._observe_worker_active = False
 
     @property
     def name(self) -> str:
@@ -164,39 +173,48 @@ class MagicContextEngine(ContextEngine):
     ) -> None:
         if not getattr(self.runtime, "available", False):
             return
-        payload = {
-            "protocolVersion": 1,
-            "host": "hermes",
-            "sessionId": self.session_id,
-            "turnId": kwargs.get("turn_id"),
-            "taskId": kwargs.get("task_id"),
-            "messages": copy.deepcopy(messages),
-            "usage": copy.deepcopy(usage),
-            "outcome": {
-                "interrupted": bool(kwargs.get("interrupted", False)),
-                "failed": bool(kwargs.get("failed", False)),
-                "exitReason": kwargs.get("turn_exit_reason"),
-            },
-        }
-        if not self._observe_gate.acquire(blocking=False):
-            logger.debug("magic-context turn observation is already in flight; coalescing turn")
-            return
-        threading.Thread(
-            target=self._observe_turn,
-            args=(payload,),
-            name=f"magic-context-observe-{self.session_id[:12]}",
-            daemon=True,
-        ).start()
+        turn_id = kwargs.get("turn_id")
+        payload = observe_request(
+            messages,
+            observation_id=str(turn_id or uuid.uuid4().hex),
+            session_id=self.session_id,
+            observed_at_ms=int(time.time() * 1000),
+            usage=copy.deepcopy(usage),
+            context_limit_tokens=self.context_length,
+            model_key=self.model_key,
+            turn_id=str(turn_id) if turn_id else None,
+            task_id=str(kwargs["task_id"]) if kwargs.get("task_id") else None,
+            interrupted=bool(kwargs.get("interrupted", False)),
+            failed=bool(kwargs.get("failed", False)),
+            exit_reason=kwargs.get("turn_exit_reason"),
+        )
+        with self._lock:
+            self._observe_queue.append(payload)
+            if self._observe_worker_active:
+                return
+            self._observe_worker_active = True
+            threading.Thread(
+                target=self._drain_observations,
+                name=f"magic-context-observe-{self.session_id[:12]}",
+                daemon=True,
+            ).start()
+
+    def _drain_observations(self) -> None:
+        while True:
+            with self._lock:
+                if not self._observe_queue:
+                    self._observe_worker_active = False
+                    return
+                payload = self._observe_queue.popleft()
+            self._observe_turn(payload)
 
     def _observe_turn(self, payload: dict[str, Any]) -> None:
         try:
             self.runtime.call("turn.observe", payload)
-        except RuntimeBridgeError as exc:
+        except Exception as exc:
             with self._lock:
                 self._runtime_failures += 1
             logger.warning("magic-context turn observation failed: %s", exc)
-        finally:
-            self._observe_gate.release()
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [

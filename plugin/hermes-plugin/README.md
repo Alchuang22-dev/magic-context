@@ -21,10 +21,18 @@ on stdin and prints one JSON response on stdout. The initial protocol supports
 `context.compose` and `turn.observe`. `context.compose` returns the
 `ContextPlan` defined by `@cortexkit/magic-context-core-plugin`.
 
+The sibling `plugin/runtime` package provides that executable. After
+`bun run plugin:build`, configure its built CLI:
+
+```bash
+export MAGIC_CONTEXT_RUNTIME_COMMAND="node /absolute/path/plugin/runtime/dist/cli.js"
+```
+
 When the runtime is absent or fails, the adapter leaves an in-budget request
 unchanged. An over-budget request is reduced to a deterministic, tool-safe tail
 instead of raising into Hermes' fail-open selection seam.
 
-The one-shot command bridge is an intentionally small migration seam. It will
-be replaced by the long-running `mc-runtime` transport once the Rust module is
-detached from its current `subc`-only transport.
+The Hermes bridge currently starts the command once per call; durable runtime
+state makes those calls equivalent to the runtime's long-running NDJSON mode.
+A future persistent bridge can reuse the same protocol without changing the
+Hermes Adapter.
