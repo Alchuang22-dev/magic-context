@@ -2,3 +2,54 @@ name: magic-context
 version: "0.1.0"
 description: "Magic Context context selection and recall adapter for Hermes."
 author: "CortexKit contributors"
+manifest_version: 2
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - on_session_reset
+  - on_session_finalize
+config_schema:
+  historian_enabled:
+    type: bool
+    default: true
+    description: "Enable Historian compartment generation after completed turns."
+  historian_threshold_percentage:
+    type: float
+    default: 65
+    description: "Input-token pressure percentage that makes Historian eligible."
+  historian_min_messages:
+    type: int
+    default: 8
+    description: "Minimum eligible messages in one Historian source range."
+  historian_protected_tail_messages:
+    type: int
+    default: 3
+    description: "Newest non-system messages kept raw and excluded from Historian."
+  historian_timeout_ms:
+    type: int
+    default: 600000
+    description: "Historian callback lease and Hermes ctx.llm timeout in milliseconds."
+  dreamer_enabled:
+    type: bool
+    default: true
+    description: "Enable scheduled durable-memory curation."
+  dreamer_interval_ms:
+    type: int
+    default: 86400000
+    description: "Minimum interval between successful Dreamer runs."
+  dreamer_timeout_ms:
+    type: int
+    default: 600000
+    description: "Dreamer callback lease and Hermes ctx.llm timeout in milliseconds."
+  sidekick_enabled:
+    type: bool
+    default: false
+    description: "Enable blocking per-request Sidekick recall before context materialization."
+  sidekick_timeout_ms:
+    type: int
+    default: 120000
+    description: "Sidekick callback lease and Hermes ctx.llm timeout in milliseconds."
+  auxiliary_max_attempts:
+    type: int
+    default: 3
+    description: "Maximum leased attempts for each auxiliary callback."

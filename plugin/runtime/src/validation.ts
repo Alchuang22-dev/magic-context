@@ -1,12 +1,16 @@
 import {
+	AUXILIARY_TASK_NAMES,
+	type AuxiliaryRuntimePolicy,
 	type CacheFeedbackRequest,
 	CONTEXT_TOOL_NAMES,
 	CORE_PROTOCOL_VERSION,
 	type ComposeContextRequest,
 	type ContextUsageObservation,
 	type ExecuteContextToolRequest,
+	type MaintenancePollRequest,
 	MEMORY_CATEGORIES,
 	type ObserveTurnRequest,
+	type ResolveHostCallbackRequest,
 	type SessionLifecycleRequest,
 	type ToolEventRequest,
 } from "@cortexkit/magic-context-core-plugin";
@@ -260,6 +264,64 @@ function validateRuntimeIdentity(
 	requireString(value.sessionId, "sessionId");
 }
 
+function validateBoundedJson(
+	value: unknown,
+	field: string,
+	maximum: number,
+): void {
+	try {
+		if (JSON.stringify(value).length > maximum) throw new Error("too large");
+	} catch {
+		throw new InvalidRuntimeRequestError(
+			`${field} must be bounded JSON (${maximum} characters maximum)`,
+		);
+	}
+}
+
+function validateAuxiliaryPolicy(value: unknown): void {
+	if (value === undefined) return;
+	if (!isRecord(value)) {
+		throw new InvalidRuntimeRequestError("auxiliaryPolicy must be an object");
+	}
+	const booleanFields: Array<keyof AuxiliaryRuntimePolicy> = [
+		"historianEnabled",
+		"dreamerEnabled",
+		"sidekickEnabled",
+	];
+	for (const field of booleanFields) {
+		if (typeof value[field] !== "boolean") {
+			throw new InvalidRuntimeRequestError(
+				`auxiliaryPolicy.${field} must be a boolean`,
+			);
+		}
+	}
+	const limits: Array<[keyof AuxiliaryRuntimePolicy, number, number, boolean]> =
+		[
+			["historianThresholdPercentage", 0, 100, false],
+			["historianMinMessages", 1, 10_000, true],
+			["historianProtectedTailMessages", 1, 100, true],
+			["historianTimeoutMs", 1_000, 3_600_000, true],
+			["dreamerIntervalMs", 0, 31_536_000_000, true],
+			["dreamerTimeoutMs", 1_000, 3_600_000, true],
+			["sidekickTimeoutMs", 1_000, 3_600_000, true],
+			["maxAttempts", 1, 10, true],
+		];
+	for (const [field, minimum, maximum, integer] of limits) {
+		const candidate = value[field];
+		if (
+			typeof candidate !== "number" ||
+			!Number.isFinite(candidate) ||
+			candidate < minimum ||
+			candidate > maximum ||
+			(integer && !Number.isInteger(candidate))
+		) {
+			throw new InvalidRuntimeRequestError(
+				`auxiliaryPolicy.${field} must be ${integer ? "an integer" : "a number"} between ${minimum} and ${maximum}`,
+			);
+		}
+	}
+}
+
 export function validateComposeRequest(value: unknown): ComposeContextRequest {
 	validateCommon(value);
 	requireString(value.requestId, "requestId");
@@ -350,12 +412,88 @@ export function validateSessionLifecycleRequest(
 	requireOptionalString(value.modelKey, "modelKey");
 	requireOptionalString(value.reason, "reason");
 	if (value.messages !== undefined) validateMessages(value.messages);
+	validateAuxiliaryPolicy(value.auxiliaryPolicy);
 	if (value.action === "clone" && !value.targetSessionId) {
 		throw new InvalidRuntimeRequestError(
 			"targetSessionId is required for clone",
 		);
 	}
 	return structuredClone(value) as unknown as SessionLifecycleRequest;
+}
+
+export function validateMaintenancePollRequest(
+	value: unknown,
+): MaintenancePollRequest {
+	validateRuntimeIdentity(value);
+	requireString(value.pollId, "pollId");
+	requireFiniteNonNegative(value.polledAtMs, "polledAtMs");
+	if (value.tasks !== undefined) {
+		if (!Array.isArray(value.tasks)) {
+			throw new InvalidRuntimeRequestError("tasks must be an array");
+		}
+		const supported = new Set<string>(AUXILIARY_TASK_NAMES);
+		const seen = new Set<string>();
+		for (const task of value.tasks) {
+			if (typeof task !== "string" || !supported.has(task)) {
+				throw new InvalidRuntimeRequestError(
+					`unsupported auxiliary task ${String(task)}`,
+				);
+			}
+			if (seen.has(task)) {
+				throw new InvalidRuntimeRequestError(
+					`duplicate auxiliary task ${task}`,
+				);
+			}
+			seen.add(task);
+		}
+	}
+	return structuredClone(value) as unknown as MaintenancePollRequest;
+}
+
+export function validateResolveHostCallbackRequest(
+	value: unknown,
+): ResolveHostCallbackRequest {
+	validateRuntimeIdentity(value);
+	requireString(value.resolutionId, "resolutionId");
+	requireString(value.callbackId, "callbackId");
+	if (!Number.isInteger(value.attempt) || Number(value.attempt) < 1) {
+		throw new InvalidRuntimeRequestError("attempt must be a positive integer");
+	}
+	requireFiniteNonNegative(value.resolvedAtMs, "resolvedAtMs");
+	if (!isRecord(value.outcome)) {
+		throw new InvalidRuntimeRequestError("outcome must be an object");
+	}
+	if (value.outcome.status === "completed") {
+		requireStringValue(value.outcome.text, "outcome.text");
+		if (value.outcome.text.length > 160_000) {
+			throw new InvalidRuntimeRequestError(
+				"outcome.text must not exceed 160000 characters",
+			);
+		}
+		if (value.outcome.parsed !== undefined) {
+			validateBoundedJson(value.outcome.parsed, "outcome.parsed", 320_000);
+		}
+		requireOptionalString(value.outcome.provider, "outcome.provider");
+		requireOptionalString(value.outcome.model, "outcome.model");
+		validateUsage(value.outcome.usage, "outcome.usage");
+	} else if (
+		value.outcome.status === "failed" ||
+		value.outcome.status === "timed_out"
+	) {
+		requireString(value.outcome.errorType, "outcome.errorType");
+		requireOptionalString(value.outcome.message, "outcome.message");
+		if (
+			typeof value.outcome.message === "string" &&
+			value.outcome.message.length > 4_000
+		) {
+			throw new InvalidRuntimeRequestError(
+				"outcome.message must not exceed 4000 characters",
+			);
+		}
+	} else {
+		throw new InvalidRuntimeRequestError("outcome.status is unsupported");
+	}
+	return structuredClone(value) as unknown as ResolveHostCallbackRequest;
 }
 
 export function validateCacheFeedbackRequest(

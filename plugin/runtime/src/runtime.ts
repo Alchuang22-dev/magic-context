@@ -9,6 +9,7 @@ import type {
 	TurnObservationReceipt,
 } from "@cortexkit/magic-context-core-plugin";
 
+import { RuntimeAuxiliaryCoordinator } from "./auxiliary";
 import {
 	composeContext,
 	DEFAULT_RUNTIME_POLICY,
@@ -31,7 +32,9 @@ import {
 	InvalidRuntimeRequestError,
 	validateCacheFeedbackRequest,
 	validateComposeRequest,
+	validateMaintenancePollRequest,
 	validateObserveRequest,
+	validateResolveHostCallbackRequest,
 	validateSessionLifecycleRequest,
 	validateToolEventRequest,
 	validateToolExecuteRequest,
@@ -110,6 +113,7 @@ export class MagicContextRuntime {
 	readonly #now: () => number;
 	readonly #memory: RuntimeMemory;
 	readonly #control: RuntimeControlPlane;
+	readonly #auxiliary: RuntimeAuxiliaryCoordinator;
 
 	constructor(options: MagicContextRuntimeOptions) {
 		this.#store = options.store;
@@ -118,6 +122,11 @@ export class MagicContextRuntime {
 		this.#policy = normalizedPolicy(options.policy);
 		this.#now = options.now ?? Date.now;
 		this.#control = new RuntimeControlPlane(
+			this.#store,
+			this.#memory,
+			this.#now,
+		);
+		this.#auxiliary = new RuntimeAuxiliaryCoordinator(
 			this.#store,
 			this.#memory,
 			this.#now,
@@ -137,16 +146,30 @@ export class MagicContextRuntime {
 				return this.#control.executeTool(
 					validateToolExecuteRequest(call.params),
 				);
-			case "session.lifecycle":
-				return this.#control.lifecycle(
-					validateSessionLifecycleRequest(call.params),
-				);
+			case "session.lifecycle": {
+				const request = validateSessionLifecycleRequest(call.params);
+				if (request.action === "start") {
+					await this.#auxiliary.configure(
+						identity(request),
+						request.auxiliaryPolicy,
+					);
+				}
+				return this.#control.lifecycle(request);
+			}
 			case "cache.observe":
 				return this.#control.observeCache(
 					validateCacheFeedbackRequest(call.params),
 				);
 			case "tool.observe":
 				return this.#control.observeTool(validateToolEventRequest(call.params));
+			case "maintenance.poll":
+				return this.#auxiliary.poll(
+					validateMaintenancePollRequest(call.params),
+				);
+			case "host.callback.resolve":
+				return this.#auxiliary.resolve(
+					validateResolveHostCallbackRequest(call.params),
+				);
 			default:
 				throw new UnknownRuntimeMethodError(String(call.method));
 		}
@@ -159,18 +182,30 @@ export class MagicContextRuntime {
 		if (snapshot.lastCompose?.requestId === request.requestId) {
 			return snapshot.lastCompose.plan;
 		}
+		const callbacks = await this.#auxiliary.beforeCompose(request);
+		const current = await this.#store.readSession(sessionIdentity);
 		const memoryBudget = deriveMemoryBudgetTokens(
 			request,
-			snapshot,
+			current,
 			this.#policy,
 		);
-		const memoryInjection = await this.#memory.recallAndRender({
+		const recalledMemory = await this.#memory.recallAndRender({
 			projectKey: memoryProjectKey(request),
 			query: latestUserQuery(request.messages),
 			budgetTokens: memoryBudget,
 			excludeIds: visibleMemoryIds(request.messages),
 			nowMs: this.#now(),
 		});
+		const contextLimit = Math.max(
+			0,
+			request.budgetTokens,
+			request.usage?.contextLimitTokens ?? 0,
+		);
+		const memoryInjection = this.#auxiliary.combineKnowledge(
+			recalledMemory,
+			current,
+			Math.floor(contextLimit * this.#policy.historyBudgetPercentage),
+		);
 		return this.#store.updateSession(sessionIdentity, (state) => {
 			if (state.lastCompose?.requestId === request.requestId) {
 				return { state, result: state.lastCompose.plan };
@@ -185,6 +220,10 @@ export class MagicContextRuntime {
 				memoryInjection,
 				triggerInjection,
 			);
+			const plan: ContextPlan =
+				callbacks.length > 0
+					? { ...composed.plan, callbacks: structuredClone(callbacks) }
+					: composed.plan;
 			const consumedTriggers = new Set(triggerInjection?.triggerIds ?? []);
 			const next = {
 				...state,
@@ -199,10 +238,10 @@ export class MagicContextRuntime {
 				),
 				lastCompose: {
 					requestId: request.requestId,
-					plan: composed.plan,
+					plan,
 				},
 			};
-			return { state: next, result: composed.plan };
+			return { state: next, result: plan };
 		});
 	}
 
@@ -211,7 +250,9 @@ export class MagicContextRuntime {
 		const sessionIdentity = identity(observation);
 		const snapshot = await this.#store.readSession(sessionIdentity);
 		if (snapshot.recentObservationIds.includes(observation.observationId)) {
-			return this.#receipt(observation, false, snapshot.revision);
+			const callbacks = await this.#auxiliary.afterObservation(observation);
+			const receipt = this.#receipt(observation, false, snapshot.revision);
+			return callbacks.length > 0 ? { ...receipt, callbacks } : receipt;
 		}
 		await this.#memory.remember({
 			projectKey: memoryProjectKey(observation),
@@ -220,50 +261,55 @@ export class MagicContextRuntime {
 			observedAtMs: observation.observedAtMs,
 			candidates: observation.memoryCandidates ?? [],
 		});
-		return this.#store.updateSession(sessionIdentity, (state) => {
-			if (state.recentObservationIds.includes(observation.observationId)) {
+		const receipt = await this.#store.updateSession(
+			sessionIdentity,
+			(state) => {
+				if (state.recentObservationIds.includes(observation.observationId)) {
+					return {
+						state,
+						result: this.#receipt(observation, false, state.revision),
+					};
+				}
+				const revision = state.revision + 1;
+				const { messages, memoryCandidates, ...observationMetadata } =
+					observation;
+				const observations = [
+					...state.observations,
+					{
+						...observationMetadata,
+						messageCount: messages.length,
+						memoryCandidateCount: memoryCandidates?.length ?? 0,
+					},
+				].slice(-this.#policy.maxObservedTurns);
+				const recentObservationIds = [
+					...state.recentObservationIds,
+					observation.observationId,
+				].slice(-this.#policy.maxObservedTurns * 4);
+				const isLatest = observation.observedAtMs >= state.lastResponseTimeMs;
 				return {
-					state,
-					result: this.#receipt(observation, false, state.revision),
+					state: {
+						...state,
+						revision,
+						lastResponseTimeMs: Math.max(
+							state.lastResponseTimeMs,
+							observation.observedAtMs,
+						),
+						latestUsage: isLatest
+							? (observation.usage ?? state.latestUsage)
+							: state.latestUsage,
+						recentObservationIds,
+						observations,
+						latestObservation: isLatest ? observation : state.latestObservation,
+						projectId: observation.projectId ?? state.projectId,
+						modelKey: observation.modelKey ?? state.modelKey,
+						lastCompose: undefined,
+					},
+					result: this.#receipt(observation, true, revision),
 				};
-			}
-			const revision = state.revision + 1;
-			const { messages, memoryCandidates, ...observationMetadata } =
-				observation;
-			const observations = [
-				...state.observations,
-				{
-					...observationMetadata,
-					messageCount: messages.length,
-					memoryCandidateCount: memoryCandidates?.length ?? 0,
-				},
-			].slice(-this.#policy.maxObservedTurns);
-			const recentObservationIds = [
-				...state.recentObservationIds,
-				observation.observationId,
-			].slice(-this.#policy.maxObservedTurns * 4);
-			const isLatest = observation.observedAtMs >= state.lastResponseTimeMs;
-			return {
-				state: {
-					...state,
-					revision,
-					lastResponseTimeMs: Math.max(
-						state.lastResponseTimeMs,
-						observation.observedAtMs,
-					),
-					latestUsage: isLatest
-						? (observation.usage ?? state.latestUsage)
-						: state.latestUsage,
-					recentObservationIds,
-					observations,
-					latestObservation: isLatest ? observation : state.latestObservation,
-					projectId: observation.projectId ?? state.projectId,
-					modelKey: observation.modelKey ?? state.modelKey,
-					lastCompose: undefined,
-				},
-				result: this.#receipt(observation, true, revision),
-			};
-		});
+			},
+		);
+		const callbacks = await this.#auxiliary.afterObservation(observation);
+		return callbacks.length > 0 ? { ...receipt, callbacks } : receipt;
 	}
 
 	#receipt(

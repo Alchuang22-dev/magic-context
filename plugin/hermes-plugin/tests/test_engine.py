@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -59,6 +60,57 @@ class FakeRuntime:
         return self.responder(method, params) if self.responder else None
 
 
+class FakeLlm:
+    def __init__(self, *, text="focused context", parsed=None, failure=None):
+        self.text = text
+        self.parsed = parsed
+        self.failure = failure
+        self.calls = []
+
+    def _result(self):
+        if self.failure:
+            raise self.failure
+        return types.SimpleNamespace(
+            text=self.text,
+            parsed=copy.deepcopy(self.parsed),
+            provider="test-provider",
+            model="test-model",
+            usage=types.SimpleNamespace(
+                input_tokens=10,
+                output_tokens=5,
+                cache_read_tokens=2,
+                cache_write_tokens=1,
+            ),
+        )
+
+    def complete(self, messages, **kwargs):
+        self.calls.append(("complete", copy.deepcopy(messages), copy.deepcopy(kwargs)))
+        return self._result()
+
+    def complete_structured(self, **kwargs):
+        self.calls.append(("structured", copy.deepcopy(kwargs)))
+        return self._result()
+
+
+def callback(task, request, *, callback_id="callback-1", attempt=1, deadline=None):
+    return {
+        "protocolVersion": 1,
+        "callbackId": callback_id,
+        "kind": "auxiliary_llm",
+        "host": "hermes",
+        "sessionId": "session-callback",
+        "task": task,
+        "taskKey": f"magic_context_{task}",
+        "purpose": f"{task} test",
+        "createdAtMs": int(time.time() * 1000),
+        "deadlineAtMs": (
+            deadline if deadline is not None else int(time.time() * 1000) + 60_000
+        ),
+        "attempt": attempt,
+        "request": request,
+    }
+
+
 class MagicContextEngineTests(unittest.TestCase):
     def test_register_declares_auxiliary_tasks_and_context_engine(self):
         class FakeContext:
@@ -88,6 +140,9 @@ class MagicContextEngineTests(unittest.TestCase):
             ],
         )
         self.assertIsInstance(context.engine, MagicContextEngine)
+        self.assertTrue(context.engine.auxiliary_policy["historianEnabled"])
+        self.assertFalse(context.engine.auxiliary_policy["sidekickEnabled"])
+        self.assertEqual(context.tasks[0]["defaults"]["timeout"], 600)
         self.assertEqual(
             set(context.hooks),
             {"pre_tool_call", "post_tool_call", "on_session_reset", "on_session_finalize"},
@@ -315,6 +370,14 @@ class MagicContextEngineTests(unittest.TestCase):
                     "accepted": True,
                     "revision": 1,
                 }
+            if method == "maintenance.poll":
+                return {
+                    "protocolVersion": 1,
+                    "pollId": request["pollId"],
+                    "sessionId": request["sessionId"],
+                    "revision": 1,
+                    "callbacks": [],
+                }
             self.assertEqual(method, "turn.observe")
             self.assertEqual(request["observationId"], "turn-7")
             self.assertEqual(request["sessionId"], "session-7")
@@ -371,6 +434,14 @@ class MagicContextEngineTests(unittest.TestCase):
                     "action": request["action"],
                     "accepted": True,
                     "revision": 1,
+                }
+            if method == "maintenance.poll":
+                return {
+                    "protocolVersion": 1,
+                    "pollId": request["pollId"],
+                    "sessionId": request["sessionId"],
+                    "revision": 1,
+                    "callbacks": [],
                 }
             self.assertEqual(method, "turn.observe")
             if request["observationId"] == "turn-1":
@@ -433,6 +504,194 @@ class MagicContextEngineTests(unittest.TestCase):
         self.assertEqual(runtime.calls[0][1]["usage"]["cacheReadTokens"], 100)
         self.assertEqual(runtime.calls[1][1]["phase"], "post")
 
+    def test_sidekick_callback_runs_through_hermes_llm_before_materialization(self):
+        compose_count = 0
+        resolved = []
+        sidekick = callback(
+            "sidekick",
+            {
+                "mode": "complete",
+                "messages": [
+                    {"role": "system", "content": "retrieve"},
+                    {"role": "user", "content": "find the rule"},
+                ],
+                "temperature": 0.1,
+                "maxTokens": 100,
+            },
+        )
+
+        def responder(method, request):
+            nonlocal compose_count
+            if method == "context.compose":
+                compose_count += 1
+                ids = [message["id"] for message in request["messages"]]
+                plan = {
+                    "protocolVersion": 1,
+                    "requestId": request["requestId"],
+                    "decision": "serve",
+                    "retain": {"messageIds": ids},
+                    "mutations": [],
+                    "injections": [],
+                    "accounting": {
+                        "estimatedInputTokens": 20,
+                        "hardLimitTokens": 1000,
+                        "cacheDecision": "bust_required",
+                    },
+                }
+                if compose_count == 1:
+                    plan["callbacks"] = [sidekick]
+                else:
+                    plan["injections"] = [
+                        {
+                            "slot": "tail_nudge",
+                            "content": "<sidekick-augmentation>focused context</sidekick-augmentation>",
+                            "epoch": 2,
+                            "fingerprint": "sidekick-result",
+                        }
+                    ]
+                return plan
+            if method == "host.callback.resolve":
+                resolved.append(copy.deepcopy(request))
+                return {
+                    "protocolVersion": 1,
+                    "resolutionId": request["resolutionId"],
+                    "callbackId": request["callbackId"],
+                    "sessionId": request["sessionId"],
+                    "accepted": True,
+                    "status": "completed",
+                    "revision": 2,
+                }
+            self.fail(f"unexpected runtime method {method}")
+
+        llm = FakeLlm(text="focused context")
+        engine = MagicContextEngine(
+            runtime=FakeRuntime(responder), llm=llm, context_length=1000
+        )
+        engine.session_id = "session-callback"
+        selected = engine.select_context(
+            [{"role": "user", "content": "find the rule"}], budget_tokens=1000
+        )
+
+        self.assertEqual(compose_count, 2)
+        self.assertEqual(llm.calls[0][0], "complete")
+        self.assertEqual(llm.calls[0][2]["task"], "magic_context_sidekick")
+        self.assertEqual(resolved[0]["outcome"]["status"], "completed")
+        self.assertEqual(resolved[0]["outcome"]["usage"]["cacheReadTokens"], 2)
+        self.assertIn("focused context", selected[0]["content"])
+        self.assertEqual(engine.get_status()["auxiliary_callbacks_completed"], 1)
+
+    def test_historian_callback_uses_structured_llm_and_returns_parsed_output(self):
+        parsed = {
+            "compartments": [
+                {
+                    "startOrdinal": 2,
+                    "endOrdinal": 8,
+                    "title": "work",
+                    "episodeType": "implementation",
+                    "importance": 90,
+                    "p1": "full",
+                    "p2": "medium",
+                    "p3": "short",
+                    "p4": "anchor",
+                }
+            ],
+            "memoryCandidates": [],
+        }
+        historian = callback(
+            "historian",
+            {
+                "mode": "structured",
+                "instructions": "summarize",
+                "input": [{"type": "text", "text": "transcript"}],
+                "jsonSchema": {"type": "object"},
+                "schemaName": "historian_output",
+                "systemPrompt": "historian",
+                "temperature": 0.1,
+                "maxTokens": 1000,
+            },
+        )
+        resolutions = []
+
+        def responder(method, request):
+            if method == "turn.observe":
+                return {
+                    "protocolVersion": 1,
+                    "observationId": request["observationId"],
+                    "sessionId": "session-callback",
+                    "accepted": True,
+                    "revision": 1,
+                    "observedAtMs": request["observedAtMs"],
+                    "callbacks": [historian],
+                }
+            if method == "host.callback.resolve":
+                resolutions.append(copy.deepcopy(request))
+                return {
+                    "protocolVersion": 1,
+                    "resolutionId": request["resolutionId"],
+                    "callbackId": request["callbackId"],
+                    "sessionId": request["sessionId"],
+                    "accepted": True,
+                    "status": "completed",
+                    "revision": 2,
+                }
+            self.fail(f"unexpected runtime method {method}")
+
+        llm = FakeLlm(text=json.dumps(parsed), parsed=parsed)
+        engine = MagicContextEngine(runtime=FakeRuntime(responder), llm=llm)
+        engine.session_id = "session-callback"
+        engine._observe_turn(
+            adapter.observe_request(
+                [{"role": "user", "content": "work"}],
+                observation_id="turn-callback",
+                session_id="session-callback",
+                observed_at_ms=int(time.time() * 1000),
+            )
+        )
+
+        self.assertEqual(llm.calls[0][0], "structured")
+        self.assertEqual(
+            llm.calls[0][1]["task"], "magic_context_historian"
+        )
+        self.assertTrue(llm.calls[0][1]["json_mode"])
+        self.assertEqual(resolutions[0]["outcome"]["parsed"], parsed)
+
+    def test_elapsed_callback_deadline_reports_timeout_without_calling_llm(self):
+        expired = callback(
+            "dreamer",
+            {
+                "mode": "structured",
+                "instructions": "curate",
+                "input": [{"type": "text", "text": "memory"}],
+                "jsonSchema": {"type": "object"},
+                "schemaName": "dreamer_output",
+            },
+            deadline=0,
+        )
+        outcomes = []
+
+        def responder(method, request):
+            self.assertEqual(method, "host.callback.resolve")
+            outcomes.append(request["outcome"])
+            return {
+                "protocolVersion": 1,
+                "resolutionId": request["resolutionId"],
+                "callbackId": request["callbackId"],
+                "sessionId": request["sessionId"],
+                "accepted": True,
+                "status": "retry_scheduled",
+                "revision": 3,
+            }
+
+        llm = FakeLlm()
+        engine = MagicContextEngine(runtime=FakeRuntime(responder), llm=llm)
+        engine._dispatch_runtime_callbacks(
+            {"sessionId": "session-callback", "callbacks": [expired]}
+        )
+
+        self.assertEqual(llm.calls, [])
+        self.assertEqual(outcomes[0]["status"], "timed_out")
+        self.assertEqual(engine.get_status()["auxiliary_callback_timeouts"], 1)
+
     @unittest.skipUnless(shutil.which("node") and RUNTIME_CLI.exists(), "built runtime required")
     def test_real_runtime_command_round_trips_compose_and_observe(self):
         node = shutil.which("node")
@@ -481,6 +740,117 @@ class MagicContextEngineTests(unittest.TestCase):
             self.assertTrue(first["accepted"])
             self.assertFalse(duplicate["accepted"])
             self.assertEqual(first["revision"], duplicate["revision"])
+
+    @unittest.skipUnless(shutil.which("node") and RUNTIME_CLI.exists(), "built runtime required")
+    def test_real_runtime_session_executes_historian_and_dreamer_callbacks(self):
+        node = shutil.which("node")
+        assert node
+
+        class RoutingLlm:
+            def __init__(self):
+                self.tasks = []
+
+            def complete_structured(self, **kwargs):
+                task = kwargs["task"]
+                self.tasks.append(task)
+                if task == "magic_context_historian":
+                    parsed = {
+                        "compartments": [
+                            {
+                                "startOrdinal": 1,
+                                "endOrdinal": 8,
+                                "title": "Hermes migration",
+                                "episodeType": "implementation",
+                                "importance": 90,
+                                "p1": "The complete migration episode.",
+                                "p2": "Hermes executes callbacks while runtime validates them.",
+                                "p3": "Runtime validates Hermes callbacks.",
+                                "p4": "Reverse RPC.",
+                            }
+                        ],
+                        "memoryCandidates": [
+                            {
+                                "category": "ARCHITECTURE",
+                                "content": "Runtime owns auxiliary validation and persistence.",
+                                "importance": 90,
+                            }
+                        ],
+                    }
+                else:
+                    parsed = {
+                        "memoryCandidates": [],
+                        "archiveIds": [],
+                        "summary": "No memory changes required.",
+                    }
+                return types.SimpleNamespace(
+                    text=json.dumps(parsed),
+                    parsed=parsed,
+                    provider="fake-provider",
+                    model="fake-model",
+                    usage=types.SimpleNamespace(
+                        input_tokens=20,
+                        output_tokens=10,
+                        cache_read_tokens=0,
+                        cache_write_tokens=0,
+                    ),
+                )
+
+        policy = {
+            "historianEnabled": True,
+            "historianThresholdPercentage": 0,
+            "historianMinMessages": 4,
+            "historianProtectedTailMessages": 2,
+            "historianTimeoutMs": 10_000,
+            "dreamerEnabled": True,
+            "dreamerIntervalMs": 0,
+            "dreamerTimeoutMs": 10_000,
+            "sidekickEnabled": False,
+            "sidekickTimeoutMs": 10_000,
+            "maxAttempts": 2,
+        }
+        with tempfile.TemporaryDirectory(prefix="magic-context-aux-runtime-") as state_dir:
+            bridge = module.RuntimeBridge(
+                (node, str(RUNTIME_CLI), "--state-dir", state_dir),
+                timeout_seconds=5.0,
+            )
+            llm = RoutingLlm()
+            engine = MagicContextEngine(
+                runtime=bridge,
+                llm=llm,
+                context_length=1000,
+                auxiliary_policy=policy,
+            )
+            engine.on_session_start("session-aux-real", project_id="project-aux")
+            messages = [
+                {
+                    "role": "user" if index % 2 == 0 else "assistant",
+                    "content": f"migration turn {index + 1}",
+                }
+                for index in range(10)
+            ]
+            engine._observe_turn(
+                adapter.observe_request(
+                    messages,
+                    observation_id="turn-aux-real",
+                    session_id="session-aux-real",
+                    observed_at_ms=int(time.time() * 1000),
+                    usage={"input_tokens": 800, "output_tokens": 20},
+                    context_limit_tokens=1000,
+                    project_id="project-aux",
+                )
+            )
+
+            self.assertEqual(
+                llm.tasks,
+                ["magic_context_historian", "magic_context_dreamer"],
+            )
+            selected = engine.select_context(messages, budget_tokens=1000)
+            self.assertTrue(
+                any("<session-history>" in str(message.get("content")) for message in selected)
+            )
+            self.assertLess(len(selected), len(messages))
+            self.assertEqual(engine.get_status()["auxiliary_callbacks_completed"], 2)
+            engine.on_session_end("session-aux-real", messages)
 
     def test_invalid_runtime_plan_falls_back_without_escaping_to_hermes(self):
         def responder(_method, request):

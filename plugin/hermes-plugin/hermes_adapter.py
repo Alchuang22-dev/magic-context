@@ -294,6 +294,7 @@ def lifecycle_request(
     model_key: str | None = None,
     project_id: str | None = None,
     reason: str | None = None,
+    auxiliary_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     request: dict[str, Any] = {
         "protocolVersion": PROTOCOL_VERSION,
@@ -314,7 +315,47 @@ def lifecycle_request(
     for key, value in optional.items():
         if value:
             request[key] = str(value)
+    if auxiliary_policy is not None:
+        request["auxiliaryPolicy"] = copy.deepcopy(auxiliary_policy)
     return request
+
+
+def maintenance_poll_request(
+    *,
+    poll_id: str,
+    session_id: str,
+    polled_at_ms: int,
+    tasks: list[str] | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "pollId": poll_id,
+        "host": "hermes",
+        "sessionId": session_id,
+        "polledAtMs": max(0, int(polled_at_ms)),
+    }
+    if tasks is not None:
+        request["tasks"] = [str(task) for task in tasks]
+    return request
+
+
+def callback_resolution_request(
+    callback: dict[str, Any],
+    outcome: dict[str, Any],
+    *,
+    resolution_id: str,
+    resolved_at_ms: int,
+) -> dict[str, Any]:
+    return {
+        "protocolVersion": PROTOCOL_VERSION,
+        "resolutionId": resolution_id,
+        "host": "hermes",
+        "sessionId": str(callback["sessionId"]),
+        "callbackId": str(callback["callbackId"]),
+        "attempt": int(callback["attempt"]),
+        "resolvedAtMs": max(0, int(resolved_at_ms)),
+        "outcome": copy.deepcopy(outcome),
+    }
 
 
 def cache_feedback_request(

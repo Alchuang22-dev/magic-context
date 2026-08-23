@@ -524,6 +524,14 @@ export class RuntimeControlPlane {
 					revision: Math.max(current.revision, snapshot.revision) + 1,
 					lastCompose: undefined,
 					recentToolResults: [],
+					auxiliary: {
+						...structuredClone(snapshot.auxiliary),
+						// Callback leases are session-bound reverse RPCs and must never
+						// cross the clone Seam. Published compartments remain reusable.
+						jobs: [],
+						completedCallbackIds: [],
+						recentSidekickQueryHashes: [],
+					},
 					lifecycleEvents: [
 						...snapshot.lifecycleEvents,
 						this.#lifecycleRecord(request),

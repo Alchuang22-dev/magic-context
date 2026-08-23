@@ -89,7 +89,37 @@ def _write_isolated_config(home: Path, model: str, base_url: str) -> None:
         },
         "context": {"engine": "magic-context"},
         "compression": {"enabled": False},
-        "plugins": {"enabled": ["magic-context"]},
+        "auxiliary": {
+            task: {
+                "provider": "custom",
+                "model": model,
+                "base_url": base_url,
+                "key_env": "MAGIC_CONTEXT_LIVE_API_KEY",
+                "api_mode": "chat_completions",
+            }
+            for task in (
+                "magic_context_historian",
+                "magic_context_dreamer",
+                "magic_context_sidekick",
+            )
+        },
+        "plugins": {
+            "enabled": ["magic-context"],
+            "entries": {
+                "magic-context": {
+                    "settings": {
+                        "historian_enabled": True,
+                        "historian_threshold_percentage": 0,
+                        "historian_min_messages": 4,
+                        "historian_protected_tail_messages": 2,
+                        "dreamer_enabled": True,
+                        "dreamer_interval_ms": 0,
+                        "sidekick_enabled": True,
+                        "auxiliary_max_attempts": 2,
+                    }
+                }
+            },
+        },
     }
     (home / "config.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False),
@@ -98,12 +128,15 @@ def _write_isolated_config(home: Path, model: str, base_url: str) -> None:
 
 
 def _sanitized_error(stage: str, exc: BaseException) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "ok": False,
         "stage": stage,
         "error_type": type(exc).__name__,
         "status_code": getattr(exc, "status_code", None),
     }
+    if isinstance(exc, LiveE2EFailure):
+        result["detail"] = str(exc)
+    return result
 
 
 def main() -> int:
@@ -185,6 +218,12 @@ def main() -> int:
             engine = agent.context_compressor
             if getattr(engine, "name", "") != "magic-context":
                 raise LiveE2EFailure("Hermes did not select the magic-context engine")
+            if (
+                engine.auxiliary_policy.get("historianThresholdPercentage") != 0
+                or engine.auxiliary_policy.get("historianMinMessages") != 4
+                or not engine.auxiliary_policy.get("sidekickEnabled")
+            ):
+                raise LiveE2EFailure("Hermes did not apply plugin auxiliary settings")
             registered_tools = set(getattr(agent, "_context_engine_tool_names", set()))
             if registered_tools != EXPECTED_TOOLS:
                 raise LiveE2EFailure("Hermes did not register the complete context tool surface")
@@ -227,9 +266,51 @@ def main() -> int:
             _wait_for_observation(engine)
             if not any(runtime_state.rglob("*.json")):
                 raise LiveE2EFailure("runtime did not persist session state")
+            runtime_documents = []
+            for path in runtime_state.glob("*.json"):
+                try:
+                    runtime_documents.append(json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, json.JSONDecodeError):
+                    continue
+            auxiliary_states = [
+                document.get("auxiliary")
+                for document in runtime_documents
+                if isinstance(document, dict)
+                and isinstance(document.get("auxiliary"), dict)
+            ]
+            if not any(
+                state.get("historianLastSuccessAtMs") for state in auxiliary_states
+            ):
+                diagnostics = [
+                    {
+                        "failure_count": state.get("historianFailureCount"),
+                        "last_error": state.get("historianLastError"),
+                        "jobs": [
+                            {
+                                "task": job.get("task"),
+                                "status": job.get("status"),
+                                "attempts": job.get("attempts"),
+                                "last_error": job.get("lastError"),
+                            }
+                            for job in state.get("jobs", [])
+                            if isinstance(job, dict)
+                        ],
+                    }
+                    for state in auxiliary_states
+                ]
+                raise LiveE2EFailure(
+                    "Historian callback was not validated and persisted: "
+                    + json.dumps(diagnostics, sort_keys=True)
+                )
+            if not any(
+                state.get("dreamerLastSuccessAtMs") for state in auxiliary_states
+            ):
+                raise LiveE2EFailure("Dreamer callback did not complete")
             _assert_secret_not_persisted(home, api_key)
 
             status = engine.get_status()
+            if status.get("auxiliary_callbacks_completed", 0) < 2:
+                raise LiveE2EFailure("Hermes did not execute the auxiliary callback chain")
             print(
                 json.dumps(
                     {
@@ -243,6 +324,15 @@ def main() -> int:
                         "cache_read_tokens": status.get("cache_read_tokens"),
                         "cache_write_tokens": status.get("cache_write_tokens"),
                         "runtime_failures": status.get("runtime_failures"),
+                        "auxiliary_callbacks_completed": status.get(
+                            "auxiliary_callbacks_completed"
+                        ),
+                        "auxiliary_callback_timeouts": status.get(
+                            "auxiliary_callback_timeouts"
+                        ),
+                        "auxiliary_callback_failures": status.get(
+                            "auxiliary_callback_failures"
+                        ),
                     },
                     sort_keys=True,
                 )

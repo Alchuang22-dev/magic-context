@@ -11,8 +11,12 @@ under `packages/plugin` (OpenCode) and `packages/pi-plugin` (Pi/OMP).
 - `runtime/` implements the independent compose/observe data plane and the
   tool, lifecycle, cache-feedback, and event-trigger control plane. It owns
   durable session/project storage, memory deduplication, hybrid recall, and
-  budgeted injection.
+  budgeted injection. It also owns Historian validation/publication,
+  Dreamer/Sidekick scheduling, durable callback leases, retry, and attempt
+  fencing.
 - `hermes-plugin/` is a Hermes `ContextEngine` Adapter for that Interface.
+  It executes runtime callbacks through the host-owned `ctx.llm` seam; it does
+  not decide what auxiliary output is valid or when it becomes durable.
 
 ## Isolation rules
 

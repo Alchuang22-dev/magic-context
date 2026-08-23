@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
 import type {
+	AuxiliaryLlmRequest,
+	AuxiliaryRuntimePolicy,
+	AuxiliaryTaskName,
 	CacheFeedbackRequest,
 	CanonicalMessage,
 	ContextPlan,
@@ -54,7 +57,11 @@ export interface RuntimeNote {
 
 export interface RuntimeAutomaticTrigger {
 	id: string;
-	kind: "large_tool_result" | "smart_note_ready" | "cache_pressure";
+	kind:
+		| "large_tool_result"
+		| "smart_note_ready"
+		| "cache_pressure"
+		| "sidekick_augmentation";
 	content: string;
 	createdAtMs: number;
 }
@@ -84,6 +91,66 @@ export interface RuntimeCacheFeedback {
 	recentEventIds: string[];
 }
 
+export type RuntimeAuxiliaryJobStatus =
+	| "queued"
+	| "leased"
+	| "completed"
+	| "failed";
+
+export interface RuntimeAuxiliaryJob {
+	callbackId: string;
+	task: AuxiliaryTaskName;
+	taskKey: string;
+	purpose: string;
+	status: RuntimeAuxiliaryJobStatus;
+	createdAtMs: number;
+	nextAttemptAtMs: number;
+	attempts: number;
+	maxAttempts: number;
+	timeoutMs: number;
+	leaseExpiresAtMs?: number;
+	completedAtMs?: number;
+	lastError?: string;
+	sourceKey: string;
+	projectKey: string;
+	sourceObservationId?: string;
+	sourceOrdinals?: number[];
+	queryHash?: string;
+	request?: AuxiliaryLlmRequest;
+}
+
+export interface RuntimeHistorianCompartment {
+	id: string;
+	callbackId: string;
+	startOrdinal: number;
+	endOrdinal: number;
+	title: string;
+	episodeType: string;
+	importance: number;
+	p1: string;
+	p2: string;
+	p3: string;
+	p4: string;
+	publishedAtMs: number;
+}
+
+export interface RuntimeAuxiliaryState {
+	policy?: AuxiliaryRuntimePolicy;
+	jobs: RuntimeAuxiliaryJob[];
+	completedCallbackIds: string[];
+	historianCursorOrdinal: number;
+	historianFailureCount: number;
+	historianLastError?: string;
+	historianLastSuccessAtMs?: number;
+	compartments: RuntimeHistorianCompartment[];
+	dreamerFailureCount: number;
+	dreamerLastError?: string;
+	dreamerLastSuccessAtMs?: number;
+	sidekickFailureCount: number;
+	sidekickLastError?: string;
+	recentSidekickQueryHashes: string[];
+}
+
 export interface RuntimeSessionState extends RuntimeSessionIdentity {
 	schemaVersion: typeof RUNTIME_STATE_SCHEMA_VERSION;
 	revision: number;
@@ -108,6 +175,7 @@ export interface RuntimeSessionState extends RuntimeSessionIdentity {
 	lifecycleMessages?: CanonicalMessage[];
 	cacheFeedback: RuntimeCacheFeedback;
 	recentToolResults: ContextToolExecutionResult[];
+	auxiliary: RuntimeAuxiliaryState;
 	lastCompose?: {
 		requestId: string;
 		plan: ContextPlan;
@@ -158,6 +226,16 @@ export function emptyRuntimeSessionState(
 			recentEventIds: [],
 		},
 		recentToolResults: [],
+		auxiliary: {
+			jobs: [],
+			completedCallbackIds: [],
+			historianCursorOrdinal: 0,
+			historianFailureCount: 0,
+			compartments: [],
+			dreamerFailureCount: 0,
+			sidekickFailureCount: 0,
+			recentSidekickQueryHashes: [],
+		},
 	};
 }
 
@@ -250,6 +328,29 @@ function assertStoredState(
 		recentToolResults: Array.isArray(state.recentToolResults)
 			? state.recentToolResults
 			: [],
+		auxiliary:
+			state.auxiliary && typeof state.auxiliary === "object"
+				? {
+						...emptyRuntimeSessionState(identity).auxiliary,
+						...state.auxiliary,
+						jobs: Array.isArray(state.auxiliary.jobs)
+							? state.auxiliary.jobs
+							: [],
+						completedCallbackIds: Array.isArray(
+							state.auxiliary.completedCallbackIds,
+						)
+							? state.auxiliary.completedCallbackIds
+							: [],
+						compartments: Array.isArray(state.auxiliary.compartments)
+							? state.auxiliary.compartments
+							: [],
+						recentSidekickQueryHashes: Array.isArray(
+							state.auxiliary.recentSidekickQueryHashes,
+						)
+							? state.auxiliary.recentSidekickQueryHashes
+							: [],
+					}
+				: emptyRuntimeSessionState(identity).auxiliary,
 	} as RuntimeSessionState;
 }
 

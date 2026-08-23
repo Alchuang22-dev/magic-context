@@ -6,27 +6,66 @@ from .engine import MagicContextEngine
 from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
 
 
+def _setting(ctx, key: str, default):
+    getter = getattr(ctx, "get_config", None)
+    if not callable(getter):
+        return default
+    value = getter(key, default)
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else default
+    if isinstance(default, int):
+        return value if isinstance(value, int) and not isinstance(value, bool) else default
+    if isinstance(default, float):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+    return value
+
+
+def _auxiliary_policy(ctx) -> dict:
+    return {
+        "historianEnabled": _setting(ctx, "historian_enabled", True),
+        "historianThresholdPercentage": _setting(
+            ctx, "historian_threshold_percentage", 65.0
+        ),
+        "historianMinMessages": _setting(ctx, "historian_min_messages", 8),
+        "historianProtectedTailMessages": _setting(
+            ctx, "historian_protected_tail_messages", 3
+        ),
+        "historianTimeoutMs": _setting(ctx, "historian_timeout_ms", 600_000),
+        "dreamerEnabled": _setting(ctx, "dreamer_enabled", True),
+        "dreamerIntervalMs": _setting(ctx, "dreamer_interval_ms", 86_400_000),
+        "dreamerTimeoutMs": _setting(ctx, "dreamer_timeout_ms", 600_000),
+        "sidekickEnabled": _setting(ctx, "sidekick_enabled", False),
+        "sidekickTimeoutMs": _setting(ctx, "sidekick_timeout_ms", 120_000),
+        "maxAttempts": _setting(ctx, "auxiliary_max_attempts", 3),
+    }
+
+
 def register(ctx) -> None:
     """Register plugin-owned model slots and the context engine prototype."""
+    auxiliary_policy = _auxiliary_policy(ctx)
     ctx.register_auxiliary_task(
         key="magic_context_historian",
         display_name="Magic Context Historian",
         description="Consolidates completed Hermes turns into durable context compartments.",
-        defaults={"temperature": 0.1},
+        defaults={"temperature": 0.1, "timeout": 600},
     )
     ctx.register_auxiliary_task(
         key="magic_context_dreamer",
         display_name="Magic Context Dreamer",
         description="Maintains and promotes long-lived project memories.",
-        defaults={"temperature": 0.2},
+        defaults={"temperature": 0.2, "timeout": 600},
     )
     ctx.register_auxiliary_task(
         key="magic_context_sidekick",
         display_name="Magic Context Sidekick",
-        description="Performs bounded background context-maintenance tasks.",
-        defaults={"temperature": 0.1},
+        description="Retrieves focused context for the active Hermes request.",
+        defaults={"temperature": 0.1, "timeout": 120},
     )
-    engine = MagicContextEngine(runtime=RuntimeBridge.from_environment(), llm=ctx.llm)
+    engine = MagicContextEngine(
+        runtime=RuntimeBridge.from_environment(),
+        llm=ctx.llm,
+        auxiliary_policy=auxiliary_policy,
+    )
     ctx.register_context_engine(engine)
 
     if hasattr(ctx, "register_hook"):

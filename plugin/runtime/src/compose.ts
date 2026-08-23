@@ -350,6 +350,9 @@ export interface RuntimeMemoryInjection {
 	epoch: number;
 	fingerprint: string;
 	estimatedTokens: number;
+	memoryIds?: number[];
+	/** Portion already charged against the history partition. */
+	historyEstimatedTokens?: number;
 }
 
 export interface RuntimeTriggerInjection {
@@ -499,7 +502,9 @@ export function composeContext(
 	});
 	const scheduledTarget = Math.max(
 		1,
-		partition.workingTokens + partition.historyTokens,
+		partition.workingTokens +
+			partition.historyTokens -
+			(memoryInjection?.historyEstimatedTokens ?? 0),
 	);
 	const injectionTokens =
 		(memoryInjection?.estimatedTokens ?? 0) +

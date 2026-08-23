@@ -14,6 +14,35 @@ external Interface has a data plane and a control plane:
 - `session.lifecycle` owns start/end/clone/reset/delete state transitions.
 - `cache.observe` records cache-read/cache-write feedback, while
   `tool.observe` records pre/post tool events and schedules automatic nudges.
+- `maintenance.poll` leases due or timed-out Historian/Dreamer work.
+- `host.callback.resolve` accepts fenced auxiliary-LLM results from a host
+  Adapter. The runtime validates and publishes those results before advancing
+  any history cursor or memory schedule.
+
+## Historian, Dreamer, and Sidekick
+
+Auxiliary inference uses a reverse-callback Interface: the runtime emits an
+`auxiliary_llm` callback with a Hermes-style task key, attempt number, and
+deadline; the host invokes its own trusted LLM seam and resolves the callback.
+No provider SDK, model routing, or credential enters the runtime.
+
+- Historian is triggered by input-side token pressure and a minimum eligible
+  source range. It excludes a protected raw tail. Output must contain ordered,
+  contiguous, full-coverage p1-p4 compartments plus valid five-category memory
+  candidates. Only a successfully validated and durably published result drops
+  source ordinals and advances `historianCursorOrdinal`.
+- Dreamer is scheduled after a successful Historian publication and when its
+  durable-memory interval is due. It validates candidate memories and archive
+  IDs before applying either mutation.
+- Sidekick is an optional blocking pre-compose recall step. Useful output is
+  stripped of `<think>` blocks and queued as a one-shot tail injection;
+  `No relevant memories found.` is treated as an empty result.
+
+Jobs, leases, attempt counters, deadlines, and completion fences live in the
+session store. Expired leases are retried with exponential backoff up to the
+configured maximum. A late result from an older attempt is rejected, and
+session cloning copies published compartments but never copies in-flight
+callbacks.
 
 The runtime never imports an agent SDK or an existing OpenCode/Pi
 implementation. Session and project-memory stores each expose a narrow

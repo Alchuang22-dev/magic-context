@@ -23,6 +23,12 @@ session lifecycle, cache feedback, and tool events. `ContextPlan` validation
 permits block targets only when an Adapter advertises `stablePartIds` and the
 referenced block exists in the canonical request.
 
+Auxiliary execution crosses the Interface as runtime-originated
+`HostCallbackRequest` values. A host executes `auxiliary_llm` through its own
+trusted model seam, then returns a fenced `ResolveHostCallbackRequest`.
+`maintenance.poll` recovers persisted jobs after host restarts or callback
+timeouts. Provider selection and credentials remain host-owned.
+
 ## Context policy
 
 `@cortexkit/magic-context-core-plugin/context-policy` owns the deterministic
@@ -45,7 +51,7 @@ Interface without editing or importing those implementations.
 
 This is still an incremental extraction. The independent runtime now provides
 a conservative host-neutral protected-tail and bounded-reduction path, durable
-memory and recall, context tools, lifecycle state, cache/tool feedback, and
-automatic triggers. Full production m[0]/m[1] history composition, historian
-extraction, workspace visibility, promotion, and dreamer execution remain in
-their current packages until those algorithms move behind this Interface.
+memory and recall, context tools, lifecycle state, cache/tool feedback,
+automatic triggers, and the Historian/Dreamer/Sidekick execution chain.
+Workspace visibility and the remaining production promotion/detail policies
+still remain in their current packages until they move behind this Interface.

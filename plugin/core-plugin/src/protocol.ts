@@ -172,6 +172,126 @@ export interface TurnObservationReceipt {
 	accepted: boolean;
 	revision: number;
 	observedAtMs: number;
+	callbacks?: HostCallbackRequest[];
+}
+
+export const AUXILIARY_TASK_NAMES = [
+	"historian",
+	"dreamer",
+	"sidekick",
+] as const;
+
+export type AuxiliaryTaskName = (typeof AUXILIARY_TASK_NAMES)[number];
+
+export interface AuxiliaryRuntimePolicy {
+	historianEnabled: boolean;
+	historianThresholdPercentage: number;
+	historianMinMessages: number;
+	historianProtectedTailMessages: number;
+	historianTimeoutMs: number;
+	dreamerEnabled: boolean;
+	dreamerIntervalMs: number;
+	dreamerTimeoutMs: number;
+	sidekickEnabled: boolean;
+	sidekickTimeoutMs: number;
+	maxAttempts: number;
+}
+
+export interface AuxiliaryLlmCompleteRequest {
+	mode: "complete";
+	messages: Array<{ role: string; content: string }>;
+	temperature?: number;
+	maxTokens?: number;
+}
+
+export interface AuxiliaryLlmStructuredRequest {
+	mode: "structured";
+	instructions: string;
+	input: Array<{ type: "text"; text: string }>;
+	jsonSchema: Record<string, unknown>;
+	schemaName: string;
+	systemPrompt?: string;
+	temperature?: number;
+	maxTokens?: number;
+}
+
+export type AuxiliaryLlmRequest =
+	| AuxiliaryLlmCompleteRequest
+	| AuxiliaryLlmStructuredRequest;
+
+/** Runtime-originated request that a host Adapter must execute at its LLM seam. */
+export interface HostCallbackRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	callbackId: string;
+	kind: "auxiliary_llm";
+	host: string;
+	sessionId: string;
+	task: AuxiliaryTaskName;
+	taskKey: string;
+	purpose: string;
+	createdAtMs: number;
+	deadlineAtMs: number;
+	attempt: number;
+	request: AuxiliaryLlmRequest;
+}
+
+export interface HostCallbackSuccess {
+	status: "completed";
+	text: string;
+	parsed?: unknown;
+	provider?: string;
+	model?: string;
+	usage?: ContextUsageObservation;
+}
+
+export interface HostCallbackFailure {
+	status: "failed" | "timed_out";
+	errorType: string;
+	message?: string;
+}
+
+export interface ResolveHostCallbackRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	resolutionId: string;
+	host: string;
+	sessionId: string;
+	callbackId: string;
+	attempt: number;
+	resolvedAtMs: number;
+	outcome: HostCallbackSuccess | HostCallbackFailure;
+}
+
+export type HostCallbackResolutionStatus =
+	| "completed"
+	| "retry_scheduled"
+	| "failed";
+
+export interface HostCallbackResolutionReceipt {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	resolutionId: string;
+	callbackId: string;
+	sessionId: string;
+	accepted: boolean;
+	status: HostCallbackResolutionStatus;
+	revision: number;
+	callbacks?: HostCallbackRequest[];
+}
+
+export interface MaintenancePollRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	pollId: string;
+	host: string;
+	sessionId: string;
+	polledAtMs: number;
+	tasks?: AuxiliaryTaskName[];
+}
+
+export interface MaintenancePollReceipt {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	pollId: string;
+	sessionId: string;
+	revision: number;
+	callbacks: HostCallbackRequest[];
 }
 
 export const CONTEXT_TOOL_NAMES = [
@@ -226,6 +346,7 @@ export interface SessionLifecycleRequest {
 	modelKey?: string;
 	reason?: string;
 	messages?: CanonicalMessage[];
+	auxiliaryPolicy?: AuxiliaryRuntimePolicy;
 }
 
 export interface SessionLifecycleReceipt {
@@ -293,7 +414,9 @@ export type ContextRuntimeCall =
 	| { method: "tool.execute"; params: ExecuteContextToolRequest }
 	| { method: "session.lifecycle"; params: SessionLifecycleRequest }
 	| { method: "cache.observe"; params: CacheFeedbackRequest }
-	| { method: "tool.observe"; params: ToolEventRequest };
+	| { method: "tool.observe"; params: ToolEventRequest }
+	| { method: "maintenance.poll"; params: MaintenancePollRequest }
+	| { method: "host.callback.resolve"; params: ResolveHostCallbackRequest };
 
 export type ContextRuntimeResult =
 	| ContextPlan
@@ -301,7 +424,9 @@ export type ContextRuntimeResult =
 	| ContextToolExecutionResult
 	| SessionLifecycleReceipt
 	| CacheFeedbackReceipt
-	| ToolEventReceipt;
+	| ToolEventReceipt
+	| MaintenancePollReceipt
+	| HostCallbackResolutionReceipt;
 
 export interface ContextMutation {
 	target: { messageId: string; blockId?: string };
@@ -332,6 +457,7 @@ export interface ContextPlan {
 		cacheDecision: "hit_safe" | "bust_required";
 	};
 	reason?: string;
+	callbacks?: HostCallbackRequest[];
 }
 
 export interface AgentContextAdapter<NativeMessages = unknown> {

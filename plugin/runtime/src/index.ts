@@ -1,3 +1,4 @@
+export * from "./auxiliary";
 export * from "./compose";
 export * from "./control-plane";
 export * from "./memory";
