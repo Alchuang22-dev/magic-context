@@ -24,8 +24,17 @@ import uuid
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-HERMES_ROOT = PLUGIN_ROOT.parents[2] / "hermes-agent"
-RUNTIME_CLI = PLUGIN_ROOT.parent / "runtime" / "dist" / "cli.js"
+HERMES_ROOT = Path(
+    os.environ.get(
+        "MAGIC_CONTEXT_HERMES_ROOT", str(PLUGIN_ROOT.parents[2] / "hermes-agent")
+    )
+).resolve()
+RUNTIME_CLI = Path(
+    os.environ.get(
+        "MAGIC_CONTEXT_RUNTIME_CLI",
+        str(PLUGIN_ROOT.parent / "runtime" / "dist" / "cli.js"),
+    )
+).resolve()
 EXPECTED_TOOLS = {
     "ctx_status",
     "ctx_search",
@@ -142,9 +151,10 @@ def _sanitized_error(stage: str, exc: BaseException) -> dict[str, object]:
 def main() -> int:
     api_key = os.environ.get("MAGIC_CONTEXT_LIVE_API_KEY", "").strip()
     model = os.environ.get("MAGIC_CONTEXT_LIVE_MODEL", "").strip()
-    base_url = os.environ.get(
-        "MAGIC_CONTEXT_LIVE_BASE_URL", "https://agentrouter.org/v1"
-    ).strip()
+    base_url = (
+        os.environ.get("MAGIC_CONTEXT_LIVE_BASE_URL", "").strip()
+        or "https://agentrouter.org/v1"
+    )
     if not api_key or not model:
         print(
             json.dumps(

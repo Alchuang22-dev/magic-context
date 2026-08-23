@@ -4,7 +4,23 @@ This package is a thin Hermes adapter for the host-neutral Magic Context core
 protocol. It registers a `magic-context` `ContextEngine` and does not import an
 OpenCode or Pi implementation.
 
-## Activation
+## Install and activate
+
+Each GitHub release provides a platform archive. Extract it, then install the
+bundle and packaged runtime atomically into an isolated or normal Hermes home:
+
+```bash
+tar -xzf magic-context-hermes-0.1.0-darwin-arm64.tar.gz
+python3 magic-context/management.py install magic-context --hermes-home ~/.hermes
+python3 ~/.hermes/plugins/magic-context/management.py doctor
+```
+
+Once the plugin is enabled, Hermes also exposes the same management Interface
+as `hermes magic-context doctor`, `hermes magic-context migrate`, and
+`hermes magic-context install`. The direct Python entrypoint remains available
+for first installation, before Hermes can discover the plugin.
+
+Select the engine:
 
 Install this directory as a Hermes plugin and select the engine:
 
@@ -16,8 +32,10 @@ compression:
   enabled: false
 ```
 
-Set `MAGIC_CONTEXT_RUNTIME_COMMAND` to a command that accepts one JSON request
-on stdin and prints one JSON response on stdout. The protocol supports
+The Adapter automatically discovers `bin/magic-context-runtime` from a release
+bundle. `MAGIC_CONTEXT_RUNTIME_COMMAND` remains an override for development or
+an externally managed process; it must accept one JSON request on stdin and
+print one JSON response on stdout. The protocol supports
 `context.compose`, `turn.observe`, `tool.execute`, `session.lifecycle`,
 `cache.observe`, `tool.observe`, `maintenance.poll`, and
 `host.callback.resolve`. `context.compose` returns the `ContextPlan` defined by
@@ -34,10 +52,27 @@ When the runtime is absent or fails, the adapter leaves an in-budget request
 unchanged. An over-budget request is reduced to a deterministic, tool-safe tail
 instead of raising into Hermes' fail-open selection seam.
 
-The Hermes bridge currently starts the command once per call; durable runtime
-state makes those calls equivalent to the runtime's long-running NDJSON mode.
-A future persistent bridge can reuse the same protocol without changing the
-Hermes Adapter.
+The Hermes bridge starts the command once per call; durable runtime state makes
+those calls equivalent to the runtime's long-running NDJSON mode without
+placing policy or persistence inside the Adapter.
+
+## Doctor and migration
+
+`doctor` verifies the generated binding and Schema hashes against the protocol
+manifest, verifies the packaged binary checksum/identity, performs a real
+`maintenance.poll` subprocess round trip, checks the state directory, and
+invokes Hermes Plugin Doctor when Hermes is importable.
+
+```bash
+hermes magic-context doctor --state-dir ~/.local/state/magic-context/runtime-v1
+hermes magic-context migrate /path/to/legacy/runtime-v1 --dry-run
+hermes magic-context migrate /path/to/context.db --force
+```
+
+Migration accepts current schema-v1 JSON directories and the legacy SQLite
+`memories` table. Memory identity, category, lifecycle and provenance are
+preserved. Host-bound transcript tags/compartments are intentionally not
+imported because their message/block identities cannot be made portable.
 
 ## Auxiliary execution
 

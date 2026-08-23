@@ -6,8 +6,10 @@ under `packages/plugin` (OpenCode) and `packages/pi-plugin` (Pi/OMP).
 
 ## Layout
 
-- `core-plugin/` owns the host-neutral transcript, protocol, token-pressure,
-  budget, and scheduling policy.
+- `protocol/` owns the JSON IDL single source, generated Draft 2020-12 Schema,
+  TS/Python/Rust bindings, and cross-language conformance golden.
+- `core-plugin/` owns the host-neutral transcript, token-pressure, budget, and
+  scheduling policy while re-exporting the generated protocol Interface.
 - `runtime/` implements the independent compose/observe data plane and the
   tool, lifecycle, cache-feedback, and event-trigger control plane. It owns
   durable session/project storage, memory deduplication, hybrid recall, and
@@ -22,6 +24,10 @@ under `packages/plugin` (OpenCode) and `packages/pi-plugin` (Pi/OMP).
 - `hermes-plugin/` is a Hermes `ContextEngine` Adapter for that Interface.
   It executes runtime callbacks through the host-owned `ctx.llm` seam; it does
   not decide what auxiliary output is valid or when it becomes durable.
+- `e2e/` compares OpenCode and Pi codecs with the same semantic golden used by
+  the Hermes Adapter test.
+- `scripts/` validates release versions/hashes and produces or smokes signed-by-
+  checksum runtime/Hermes artifacts for five platforms.
 
 The domain vocabulary and ownership rules are recorded in
 [CONTEXT.md](./CONTEXT.md).
@@ -35,3 +41,6 @@ The domain vocabulary and ownership rules are recorded in
   here; host wiring is added only through a new Adapter.
 - Use the root `plugin:*` scripts to build and verify this subtree independently
   from the existing repository workflows.
+
+Release construction, Hermes lifecycle commands, supported targets, and CI
+gates are documented in [RELEASING.md](./RELEASING.md).

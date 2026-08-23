@@ -7,7 +7,11 @@ import os
 import shlex
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from .generated_protocol import validate_runtime_call, validate_runtime_result
+from .management import packaged_runtime_path
 
 
 class RuntimeBridgeError(RuntimeError):
@@ -33,7 +37,12 @@ class RuntimeBridge:
             timeout = max(0.1, float(timeout_raw))
         except ValueError:
             timeout = 8.0
-        return cls(tuple(shlex.split(raw)) if raw else (), timeout)
+        if raw:
+            command = tuple(shlex.split(raw))
+        else:
+            packaged = packaged_runtime_path(Path(__file__).resolve().parent)
+            command = (str(packaged),) if packaged else ()
+        return cls(command, timeout)
 
     @property
     def available(self) -> bool:
@@ -43,6 +52,8 @@ class RuntimeBridge:
         if not self.command:
             return None
         request = {"method": method, "params": params}
+        if not validate_runtime_call(request):
+            raise RuntimeBridgeError("runtime request violates the generated protocol")
         try:
             completed = subprocess.run(
                 self.command,
@@ -73,4 +84,6 @@ class RuntimeBridge:
         result = response.get("result", response)
         if not isinstance(result, dict):
             raise RuntimeBridgeError("runtime result must be an object")
+        if not validate_runtime_result(method, result):
+            raise RuntimeBridgeError("runtime result violates the generated protocol")
         return result

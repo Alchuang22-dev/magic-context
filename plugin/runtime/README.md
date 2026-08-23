@@ -120,3 +120,19 @@ Policy overrides are available through:
 - `MAGIC_CONTEXT_MEMORY_BUDGET_PERCENTAGE`
 - `MAGIC_CONTEXT_CACHE_TTL`
 - `MAGIC_CONTEXT_MAX_OBSERVED_TURNS`
+
+## Standalone artifacts
+
+The release builder compiles the CLI into a self-contained Bun executable and
+packages it with the matching Hermes Adapter:
+
+```bash
+bun run plugin:release:runtime -- --target darwin-arm64 --output release
+node plugin/scripts/smoke-runtime.mjs release/darwin-arm64
+```
+
+Supported targets are `linux-x64`, `linux-arm64`, `darwin-x64`,
+`darwin-arm64`, and `windows-x64`. `--protocol-info` prints the embedded
+protocol version and IDL hash without opening storage. Every target directory
+contains a runtime manifest, binary and archive SHA-256 checksums, and one
+Hermes archive with the same generated protocol identity.

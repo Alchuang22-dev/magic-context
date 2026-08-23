@@ -1,0 +1,19 @@
+{
+  "semanticBlocks": [
+    { "role": "user", "kind": "text", "value": "inspect this" },
+    {
+      "role": "assistant",
+      "kind": "tool_call",
+      "callId": "call-1",
+      "name": "read",
+      "value": { "path": "a.txt" }
+    },
+    {
+      "role": "tool",
+      "kind": "tool_result",
+      "callId": "call-1",
+      "name": "read",
+      "value": "contents"
+    }
+  ]
+}

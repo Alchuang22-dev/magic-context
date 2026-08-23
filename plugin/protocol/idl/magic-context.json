@@ -1,0 +1,472 @@
+{
+  "name": "MagicContextProtocol",
+  "version": 1,
+  "schemaId": "https://cortexkit.dev/schemas/magic-context-protocol-v1.json",
+  "enums": {
+    "ContextDecision": { "values": ["serve", "defer", "safe_fallback", "block"] },
+    "ContextInjectionSlot": { "values": ["stable_prefix", "volatile_delta", "tail_nudge"] },
+    "ContextMutationKind": { "values": ["drop", "replace", "truncate_tool", "edit_marker", "prefix_tag"] },
+    "CanonicalTextKind": { "values": ["text", "thinking"] },
+    "CanonicalOpaqueKind": { "values": ["image", "file", "opaque"] },
+    "MemoryCategory": {
+      "values": ["PROJECT_RULES", "ARCHITECTURE", "CONSTRAINTS", "CONFIG_VALUES", "NAMING"],
+      "constName": "MEMORY_CATEGORIES"
+    },
+    "MemoryScope": { "values": ["project", "ecosystem", "universe"] },
+    "MemorySourceType": { "values": ["historian", "agent", "dreamer", "tool"] },
+    "AuxiliaryTaskName": {
+      "values": ["historian", "dreamer", "sidekick"],
+      "constName": "AUXILIARY_TASK_NAMES"
+    },
+    "HostCallbackResolutionStatus": { "values": ["completed", "retry_scheduled", "failed"] },
+    "ContextToolName": {
+      "values": ["ctx_search", "ctx_memory", "ctx_expand", "ctx_reduce", "ctx_note"],
+      "constName": "CONTEXT_TOOL_NAMES"
+    },
+    "SessionLifecycleAction": { "values": ["start", "end", "clone", "reset", "delete"] },
+    "ToolEventPhase": { "values": ["pre", "post"] },
+    "CacheDecision": { "values": ["hit_safe", "bust_required"] },
+    "HostCallbackFailureStatus": { "values": ["failed", "timed_out"] }
+  },
+  "aliases": {
+    "CanonicalRole": { "type": "string" },
+    "CanonicalBlock": {
+      "union": ["CanonicalTextBlock", "CanonicalToolCallBlock", "CanonicalToolResultBlock", "CanonicalOpaqueBlock"]
+    },
+    "AuxiliaryLlmRequest": { "union": ["AuxiliaryLlmCompleteRequest", "AuxiliaryLlmStructuredRequest"] },
+    "HostCallbackOutcome": { "union": ["HostCallbackSuccess", "HostCallbackFailure"] },
+    "RuntimeResponse": { "union": ["RuntimeSuccess", "RuntimeFailure"] }
+  },
+  "records": {
+    "AgentCapabilities": {
+      "fields": {
+        "preRequestTransform": { "type": "boolean" },
+        "stableMessageIds": { "type": "boolean" },
+        "stablePartIds": { "type": "boolean" },
+        "usageObservation": { "type": "boolean" },
+        "auxiliaryLlm": { "type": "boolean" },
+        "toolRegistration": { "type": "boolean" },
+        "toolEvents": { "type": "boolean" },
+        "requestBlocking": { "type": "boolean" },
+        "systemSuffixInjection": { "type": "boolean" },
+        "promptCacheFacts": { "type": "boolean" },
+        "blockIndexMutations": { "type": "boolean", "optional": true }
+      }
+    },
+    "CanonicalTextBlock": {
+      "fields": {
+        "id": { "type": "string", "optional": true },
+        "kind": { "type": "CanonicalTextKind" },
+        "text": { "type": "string" }
+      }
+    },
+    "CanonicalToolCallBlock": {
+      "fields": {
+        "id": { "type": "string", "optional": true },
+        "kind": { "type": "string", "const": "tool_call" },
+        "callId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "input": { "type": "json" }
+      }
+    },
+    "CanonicalToolResultBlock": {
+      "fields": {
+        "id": { "type": "string", "optional": true },
+        "kind": { "type": "string", "const": "tool_result" },
+        "callId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "optional": true },
+        "output": { "type": "json" },
+        "isError": { "type": "boolean", "optional": true }
+      }
+    },
+    "CanonicalOpaqueBlock": {
+      "fields": {
+        "id": { "type": "string", "optional": true },
+        "kind": { "type": "CanonicalOpaqueKind" },
+        "value": { "type": "json" }
+      }
+    },
+    "CanonicalMessage": {
+      "fields": {
+        "id": { "type": "string", "minLength": 1 },
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "role": { "type": "CanonicalRole", "minLength": 1 },
+        "content": { "type": "CanonicalBlock", "array": true },
+        "createdAtMs": { "type": "number", "minimum": 0, "optional": true },
+        "synthetic": { "type": "boolean", "optional": true }
+      }
+    },
+    "ContextUsageObservation": {
+      "fields": {
+        "inputTokens": { "type": "number", "minimum": 0, "optional": true },
+        "outputTokens": { "type": "number", "minimum": 0, "optional": true },
+        "cacheReadTokens": { "type": "number", "minimum": 0, "optional": true },
+        "cacheWriteTokens": { "type": "number", "minimum": 0, "optional": true },
+        "reasoningTokens": { "type": "number", "minimum": 0, "optional": true },
+        "contextLimitTokens": { "type": "number", "minimum": 0, "optional": true }
+      }
+    },
+    "ComposeContextRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "requestId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string", "optional": true },
+        "projectId": { "type": "string", "optional": true },
+        "modelKey": { "type": "string", "optional": true },
+        "budgetTokens": { "type": "number", "minimum": 0 },
+        "capabilities": { "type": "AgentCapabilities" },
+        "messages": { "type": "CanonicalMessage", "array": true },
+        "usage": { "type": "ContextUsageObservation", "optional": true }
+      }
+    },
+    "TurnOutcomeObservation": {
+      "fields": {
+        "interrupted": { "type": "boolean" },
+        "failed": { "type": "boolean" },
+        "exitReason": { "type": "string", "optional": true }
+      }
+    },
+    "ObservedMemoryCandidate": {
+      "fields": {
+        "category": { "type": "MemoryCategory" },
+        "content": { "type": "string", "minLength": 1, "maxLength": 64000 },
+        "importance": { "type": "number", "minimum": 0, "maximum": 100, "optional": true },
+        "scope": { "type": "MemoryScope", "optional": true },
+        "shareable": { "type": "boolean", "optional": true },
+        "sourceType": { "type": "MemorySourceType", "optional": true },
+        "expiresAtMs": { "type": "number", "minimum": 0, "optional": true },
+        "metadata": { "type": "json", "map": true, "optional": true }
+      }
+    },
+    "ObserveTurnRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "observationId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string", "optional": true },
+        "taskId": { "type": "string", "optional": true },
+        "projectId": { "type": "string", "optional": true },
+        "modelKey": { "type": "string", "optional": true },
+        "observedAtMs": { "type": "number", "minimum": 0 },
+        "messages": { "type": "CanonicalMessage", "array": true },
+        "usage": { "type": "ContextUsageObservation", "optional": true },
+        "outcome": { "type": "TurnOutcomeObservation" },
+        "memoryCandidates": { "type": "ObservedMemoryCandidate", "array": true, "maxItems": 128, "optional": true }
+      }
+    },
+    "TurnObservationReceipt": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "observationId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "accepted": { "type": "boolean" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "observedAtMs": { "type": "number", "minimum": 0 },
+        "callbacks": { "type": "HostCallbackRequest", "array": true, "optional": true }
+      }
+    },
+    "AuxiliaryRuntimePolicy": {
+      "fields": {
+        "historianEnabled": { "type": "boolean" },
+        "historianThresholdPercentage": { "type": "number", "minimum": 0 },
+        "historianMinMessages": { "type": "integer", "minimum": 0 },
+        "historianProtectedTailMessages": { "type": "integer", "minimum": 0 },
+        "historianTimeoutMs": { "type": "number", "minimum": 0 },
+        "dreamerEnabled": { "type": "boolean" },
+        "dreamerIntervalMs": { "type": "number", "minimum": 0 },
+        "dreamerTimeoutMs": { "type": "number", "minimum": 0 },
+        "sidekickEnabled": { "type": "boolean" },
+        "sidekickTimeoutMs": { "type": "number", "minimum": 0 },
+        "maxAttempts": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "AuxiliaryChatMessage": {
+      "fields": {
+        "role": { "type": "string" },
+        "content": { "type": "string" }
+      }
+    },
+    "AuxiliaryStructuredInput": {
+      "fields": {
+        "type": { "type": "string", "const": "text" },
+        "text": { "type": "string" }
+      }
+    },
+    "AuxiliaryLlmCompleteRequest": {
+      "fields": {
+        "mode": { "type": "string", "const": "complete" },
+        "messages": { "type": "AuxiliaryChatMessage", "array": true },
+        "temperature": { "type": "number", "optional": true },
+        "maxTokens": { "type": "number", "minimum": 0, "optional": true }
+      }
+    },
+    "AuxiliaryLlmStructuredRequest": {
+      "fields": {
+        "mode": { "type": "string", "const": "structured" },
+        "instructions": { "type": "string" },
+        "input": { "type": "AuxiliaryStructuredInput", "array": true },
+        "jsonSchema": { "type": "json", "map": true },
+        "schemaName": { "type": "string" },
+        "systemPrompt": { "type": "string", "optional": true },
+        "temperature": { "type": "number", "optional": true },
+        "maxTokens": { "type": "number", "minimum": 0, "optional": true }
+      }
+    },
+    "HostCallbackRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "callbackId": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "const": "auxiliary_llm" },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "task": { "type": "AuxiliaryTaskName" },
+        "taskKey": { "type": "string" },
+        "purpose": { "type": "string" },
+        "createdAtMs": { "type": "number", "minimum": 0 },
+        "deadlineAtMs": { "type": "number", "minimum": 0 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "request": { "type": "AuxiliaryLlmRequest" }
+      }
+    },
+    "HostCallbackSuccess": {
+      "fields": {
+        "status": { "type": "string", "const": "completed" },
+        "text": { "type": "string" },
+        "parsed": { "type": "json", "optional": true },
+        "provider": { "type": "string", "optional": true },
+        "model": { "type": "string", "optional": true },
+        "usage": { "type": "ContextUsageObservation", "optional": true }
+      }
+    },
+    "HostCallbackFailure": {
+      "fields": {
+        "status": { "type": "HostCallbackFailureStatus" },
+        "errorType": { "type": "string" },
+        "message": { "type": "string", "optional": true }
+      }
+    },
+    "ResolveHostCallbackRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "resolutionId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "callbackId": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "resolvedAtMs": { "type": "number", "minimum": 0 },
+        "outcome": { "type": "HostCallbackOutcome" }
+      }
+    },
+    "HostCallbackResolutionReceipt": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "resolutionId": { "type": "string" },
+        "callbackId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "accepted": { "type": "boolean" },
+        "status": { "type": "HostCallbackResolutionStatus" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "callbacks": { "type": "HostCallbackRequest", "array": true, "optional": true }
+      }
+    },
+    "MaintenancePollRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "pollId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "polledAtMs": { "type": "number", "minimum": 0 },
+        "tasks": { "type": "AuxiliaryTaskName", "array": true, "optional": true }
+      }
+    },
+    "MaintenancePollReceipt": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "pollId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "callbacks": { "type": "HostCallbackRequest", "array": true }
+      }
+    },
+    "ExecuteContextToolRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "requestId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "projectId": { "type": "string", "optional": true },
+        "modelKey": { "type": "string", "optional": true },
+        "toolName": { "type": "ContextToolName" },
+        "arguments": { "type": "json", "map": true },
+        "messages": { "type": "CanonicalMessage", "array": true, "optional": true },
+        "invokedAtMs": { "type": "number", "minimum": 0 }
+      }
+    },
+    "ContextToolExecutionResult": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "requestId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "toolName": { "type": "ContextToolName" },
+        "ok": { "type": "boolean" },
+        "output": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "SessionLifecycleRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "eventId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "action": { "type": "SessionLifecycleAction" },
+        "observedAtMs": { "type": "number", "minimum": 0 },
+        "targetSessionId": { "type": "string", "optional": true },
+        "projectId": { "type": "string", "optional": true },
+        "modelKey": { "type": "string", "optional": true },
+        "reason": { "type": "string", "optional": true },
+        "messages": { "type": "CanonicalMessage", "array": true, "optional": true },
+        "auxiliaryPolicy": { "type": "AuxiliaryRuntimePolicy", "optional": true }
+      }
+    },
+    "SessionLifecycleReceipt": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "eventId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "action": { "type": "SessionLifecycleAction" },
+        "accepted": { "type": "boolean" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "targetSessionId": { "type": "string", "optional": true }
+      }
+    },
+    "CacheFeedbackRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "eventId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "observedAtMs": { "type": "number", "minimum": 0 },
+        "usage": { "type": "ContextUsageObservation" },
+        "projectId": { "type": "string", "optional": true },
+        "modelKey": { "type": "string", "optional": true }
+      }
+    },
+    "CacheFeedbackReceipt": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "eventId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "accepted": { "type": "boolean" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "cumulativeCacheReadTokens": { "type": "number", "minimum": 0 },
+        "cumulativeCacheWriteTokens": { "type": "number", "minimum": 0 }
+      }
+    },
+    "ToolEventRequest": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "eventId": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "observedAtMs": { "type": "number", "minimum": 0 },
+        "phase": { "type": "ToolEventPhase" },
+        "toolName": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "json", "map": true, "optional": true },
+        "result": { "type": "json", "optional": true },
+        "status": { "type": "string", "optional": true },
+        "durationMs": { "type": "number", "minimum": 0, "optional": true },
+        "toolCallId": { "type": "string", "optional": true },
+        "turnId": { "type": "string", "optional": true },
+        "taskId": { "type": "string", "optional": true }
+      }
+    },
+    "ToolEventReceipt": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "eventId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "accepted": { "type": "boolean" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "triggersQueued": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ContextMutationTarget": {
+      "fields": {
+        "messageId": { "type": "string", "minLength": 1 },
+        "blockId": { "type": "string", "optional": true },
+        "blockIndex": { "type": "integer", "minimum": 0, "optional": true }
+      }
+    },
+    "ContextMutation": {
+      "fields": {
+        "target": { "type": "ContextMutationTarget" },
+        "operation": { "type": "ContextMutationKind" },
+        "content": { "type": "string", "optional": true }
+      }
+    },
+    "ContextInjection": {
+      "fields": {
+        "slot": { "type": "ContextInjectionSlot" },
+        "content": { "type": "json" },
+        "epoch": { "type": "integer", "minimum": 0 },
+        "fingerprint": { "type": "string" }
+      }
+    },
+    "ContextRetain": {
+      "fields": {
+        "messageIds": { "type": "string", "array": true },
+        "protectedTailStart": { "type": "string", "optional": true }
+      }
+    },
+    "ContextAccounting": {
+      "fields": {
+        "estimatedInputTokens": { "type": "number", "minimum": 0 },
+        "hardLimitTokens": { "type": "number", "minimum": 0 },
+        "cacheDecision": { "type": "CacheDecision" }
+      }
+    },
+    "ContextPlan": {
+      "fields": {
+        "protocolVersion": { "type": "integer", "const": 1 },
+        "requestId": { "type": "string" },
+        "decision": { "type": "ContextDecision" },
+        "retain": { "type": "ContextRetain" },
+        "mutations": { "type": "ContextMutation", "array": true },
+        "injections": { "type": "ContextInjection", "array": true },
+        "accounting": { "type": "ContextAccounting" },
+        "reason": { "type": "string", "optional": true },
+        "callbacks": { "type": "HostCallbackRequest", "array": true, "optional": true }
+      }
+    },
+    "RuntimeError": {
+      "fields": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "RuntimeSuccess": {
+      "fields": {
+        "result": { "type": "ContextRuntimeResult" }
+      }
+    },
+    "RuntimeFailure": {
+      "fields": {
+        "error": { "type": "RuntimeError" }
+      }
+    }
+  },
+  "methods": {
+    "context.compose": { "params": "ComposeContextRequest", "result": "ContextPlan" },
+    "turn.observe": { "params": "ObserveTurnRequest", "result": "TurnObservationReceipt" },
+    "tool.execute": { "params": "ExecuteContextToolRequest", "result": "ContextToolExecutionResult" },
+    "session.lifecycle": { "params": "SessionLifecycleRequest", "result": "SessionLifecycleReceipt" },
+    "cache.observe": { "params": "CacheFeedbackRequest", "result": "CacheFeedbackReceipt" },
+    "tool.observe": { "params": "ToolEventRequest", "result": "ToolEventReceipt" },
+    "maintenance.poll": { "params": "MaintenancePollRequest", "result": "MaintenancePollReceipt" },
+    "host.callback.resolve": { "params": "ResolveHostCallbackRequest", "result": "HostCallbackResolutionReceipt" }
+  }
+}

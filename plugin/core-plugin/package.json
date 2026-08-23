@@ -11,7 +11,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/context-policy.ts src/protocol.ts src/transcript.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "build": "rm -rf dist && bun build src/index.ts src/context-policy.ts src/protocol.ts src/protocol-validation.ts src/transcript.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "biome check src",
@@ -34,6 +34,9 @@
       "types": "./dist/transcript.d.ts",
       "import": "./dist/transcript.js"
     }
+  },
+  "dependencies": {
+    "@cortexkit/magic-context-protocol": "0.1.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",

@@ -4,6 +4,11 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
+	CORE_PROTOCOL_VERSION,
+	PROTOCOL_IDL_SHA256,
+	validateRuntimeCall,
+} from "@cortexkit/magic-context-core-plugin";
+import {
 	createDefaultRuntime,
 	MagicContextRuntime,
 	type RuntimeCallEnvelope,
@@ -31,6 +36,12 @@ export async function processRuntimeLine(
 ): Promise<string> {
 	try {
 		const call = JSON.parse(line) as RuntimeCallEnvelope;
+		if (!validateRuntimeCall(call)) {
+			throw Object.assign(
+				new Error("runtime call violates the generated protocol"),
+				{ code: "INVALID_REQUEST" },
+			);
+		}
 		const result = await runtime.handle(call);
 		return JSON.stringify({ result });
 	} catch (error) {
@@ -62,8 +73,14 @@ export async function runStdio(
 ) {
 	if (args.includes("--help")) {
 		process.stdout.write(
-			"Usage: magic-context-runtime [--state-dir PATH | --memory]\n" +
+			"Usage: magic-context-runtime [--state-dir PATH | --memory] [--protocol-info]\n" +
 				"Reads JSON or NDJSON calls from stdin and writes one response per line.\n",
+		);
+		return;
+	}
+	if (args.includes("--protocol-info")) {
+		process.stdout.write(
+			`${JSON.stringify({ protocolVersion: CORE_PROTOCOL_VERSION, idlSha256: PROTOCOL_IDL_SHA256 })}\n`,
 		);
 		return;
 	}

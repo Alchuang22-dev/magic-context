@@ -161,6 +161,9 @@
     "plugin/core-plugin": {
       "name": "@cortexkit/magic-context-core-plugin",
       "version": "0.1.0",
+      "dependencies": {
+        "@cortexkit/magic-context-protocol": "workspace:*",
+      },
       "devDependencies": {
         "@biomejs/biome": "^2.5.1",
         "@types/bun": "^1.3.10",
@@ -189,6 +192,15 @@
         "@cortexkit/magic-context-core-plugin": "workspace:*",
         "@cortexkit/magic-context-runtime": "workspace:*",
       },
+      "devDependencies": {
+        "@biomejs/biome": "^2.5.1",
+        "@types/bun": "^1.3.10",
+        "typescript": "^5.8.0",
+      },
+    },
+    "plugin/protocol": {
+      "name": "@cortexkit/magic-context-protocol",
+      "version": "0.1.0",
       "devDependencies": {
         "@biomejs/biome": "^2.5.1",
         "@types/bun": "^1.3.10",
@@ -433,6 +445,8 @@
     "@cortexkit/magic-context-core-plugin": ["@cortexkit/magic-context-core-plugin@workspace:plugin/core-plugin"],
 
     "@cortexkit/magic-context-dashboard": ["@cortexkit/magic-context-dashboard@workspace:packages/dashboard"],
+
+    "@cortexkit/magic-context-protocol": ["@cortexkit/magic-context-protocol@workspace:plugin/protocol"],
 
     "@cortexkit/magic-context-runtime": ["@cortexkit/magic-context-runtime@workspace:plugin/runtime"],
 

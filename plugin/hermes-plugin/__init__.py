@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .engine import MagicContextEngine
+from .management import configure_cli, handle_cli
 from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
 
 
@@ -67,6 +68,14 @@ def register(ctx) -> None:
         auxiliary_policy=auxiliary_policy,
     )
     ctx.register_context_engine(engine)
+    if hasattr(ctx, "register_cli_command"):
+        ctx.register_cli_command(
+            "magic-context",
+            "Install, diagnose, or migrate the Magic Context runtime",
+            configure_cli,
+            handle_cli,
+            description="Magic Context protocol/runtime management",
+        )
 
     if hasattr(ctx, "register_hook"):
         ctx.register_hook(

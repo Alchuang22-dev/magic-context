@@ -1,0 +1,1788 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cortexkit.dev/schemas/magic-context-protocol-v1.json",
+  "title": "MagicContextProtocol",
+  "description": "Generated Magic Context runtime call schema. Edit idl/magic-context.json, never this file.",
+  "x-protocol-version": 1,
+  "x-idl-sha256": "8ca5240204fa735aef0d37cb7b53b941ffec836e60060390fd4ac33960e1a870",
+  "x-method-results": {
+    "context.compose": "ContextPlan",
+    "turn.observe": "TurnObservationReceipt",
+    "tool.execute": "ContextToolExecutionResult",
+    "session.lifecycle": "SessionLifecycleReceipt",
+    "cache.observe": "CacheFeedbackReceipt",
+    "tool.observe": "ToolEventReceipt",
+    "maintenance.poll": "MaintenancePollReceipt",
+    "host.callback.resolve": "HostCallbackResolutionReceipt"
+  },
+  "$ref": "#/$defs/ContextRuntimeCall",
+  "$defs": {
+    "ContextDecision": {
+      "type": "string",
+      "enum": [
+        "serve",
+        "defer",
+        "safe_fallback",
+        "block"
+      ]
+    },
+    "ContextInjectionSlot": {
+      "type": "string",
+      "enum": [
+        "stable_prefix",
+        "volatile_delta",
+        "tail_nudge"
+      ]
+    },
+    "ContextMutationKind": {
+      "type": "string",
+      "enum": [
+        "drop",
+        "replace",
+        "truncate_tool",
+        "edit_marker",
+        "prefix_tag"
+      ]
+    },
+    "CanonicalTextKind": {
+      "type": "string",
+      "enum": [
+        "text",
+        "thinking"
+      ]
+    },
+    "CanonicalOpaqueKind": {
+      "type": "string",
+      "enum": [
+        "image",
+        "file",
+        "opaque"
+      ]
+    },
+    "MemoryCategory": {
+      "type": "string",
+      "enum": [
+        "PROJECT_RULES",
+        "ARCHITECTURE",
+        "CONSTRAINTS",
+        "CONFIG_VALUES",
+        "NAMING"
+      ]
+    },
+    "MemoryScope": {
+      "type": "string",
+      "enum": [
+        "project",
+        "ecosystem",
+        "universe"
+      ]
+    },
+    "MemorySourceType": {
+      "type": "string",
+      "enum": [
+        "historian",
+        "agent",
+        "dreamer",
+        "tool"
+      ]
+    },
+    "AuxiliaryTaskName": {
+      "type": "string",
+      "enum": [
+        "historian",
+        "dreamer",
+        "sidekick"
+      ]
+    },
+    "HostCallbackResolutionStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "retry_scheduled",
+        "failed"
+      ]
+    },
+    "ContextToolName": {
+      "type": "string",
+      "enum": [
+        "ctx_search",
+        "ctx_memory",
+        "ctx_expand",
+        "ctx_reduce",
+        "ctx_note"
+      ]
+    },
+    "SessionLifecycleAction": {
+      "type": "string",
+      "enum": [
+        "start",
+        "end",
+        "clone",
+        "reset",
+        "delete"
+      ]
+    },
+    "ToolEventPhase": {
+      "type": "string",
+      "enum": [
+        "pre",
+        "post"
+      ]
+    },
+    "CacheDecision": {
+      "type": "string",
+      "enum": [
+        "hit_safe",
+        "bust_required"
+      ]
+    },
+    "HostCallbackFailureStatus": {
+      "type": "string",
+      "enum": [
+        "failed",
+        "timed_out"
+      ]
+    },
+    "CanonicalRole": {
+      "type": "string"
+    },
+    "CanonicalBlock": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CanonicalTextBlock"
+        },
+        {
+          "$ref": "#/$defs/CanonicalToolCallBlock"
+        },
+        {
+          "$ref": "#/$defs/CanonicalToolResultBlock"
+        },
+        {
+          "$ref": "#/$defs/CanonicalOpaqueBlock"
+        }
+      ]
+    },
+    "AuxiliaryLlmRequest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/AuxiliaryLlmCompleteRequest"
+        },
+        {
+          "$ref": "#/$defs/AuxiliaryLlmStructuredRequest"
+        }
+      ]
+    },
+    "HostCallbackOutcome": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HostCallbackSuccess"
+        },
+        {
+          "$ref": "#/$defs/HostCallbackFailure"
+        }
+      ]
+    },
+    "RuntimeResponse": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RuntimeSuccess"
+        },
+        {
+          "$ref": "#/$defs/RuntimeFailure"
+        }
+      ]
+    },
+    "AgentCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preRequestTransform": {
+          "type": "boolean"
+        },
+        "stableMessageIds": {
+          "type": "boolean"
+        },
+        "stablePartIds": {
+          "type": "boolean"
+        },
+        "usageObservation": {
+          "type": "boolean"
+        },
+        "auxiliaryLlm": {
+          "type": "boolean"
+        },
+        "toolRegistration": {
+          "type": "boolean"
+        },
+        "toolEvents": {
+          "type": "boolean"
+        },
+        "requestBlocking": {
+          "type": "boolean"
+        },
+        "systemSuffixInjection": {
+          "type": "boolean"
+        },
+        "promptCacheFacts": {
+          "type": "boolean"
+        },
+        "blockIndexMutations": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "preRequestTransform",
+        "stableMessageIds",
+        "stablePartIds",
+        "usageObservation",
+        "auxiliaryLlm",
+        "toolRegistration",
+        "toolEvents",
+        "requestBlocking",
+        "systemSuffixInjection",
+        "promptCacheFacts"
+      ]
+    },
+    "CanonicalTextBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/CanonicalTextKind"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    "CanonicalToolCallBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "tool_call"
+        },
+        "callId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {}
+      },
+      "required": [
+        "kind",
+        "callId",
+        "name",
+        "input"
+      ]
+    },
+    "CanonicalToolResultBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "tool_result"
+        },
+        "callId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "output": {},
+        "isError": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "callId",
+        "output"
+      ]
+    },
+    "CanonicalOpaqueBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/CanonicalOpaqueKind"
+        },
+        "value": {}
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "CanonicalMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "role": {
+          "$ref": "#/$defs/CanonicalRole",
+          "minLength": 1
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalBlock"
+          }
+        },
+        "createdAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "synthetic": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "ordinal",
+        "role",
+        "content"
+      ]
+    },
+    "ContextUsageObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheReadTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheWriteTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reasoningTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "contextLimitTokens": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": []
+    },
+    "ComposeContextRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "modelKey": {
+          "type": "string"
+        },
+        "budgetTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "capabilities": {
+          "$ref": "#/$defs/AgentCapabilities"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalMessage"
+          }
+        },
+        "usage": {
+          "$ref": "#/$defs/ContextUsageObservation"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "host",
+        "sessionId",
+        "budgetTokens",
+        "capabilities",
+        "messages"
+      ]
+    },
+    "TurnOutcomeObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interrupted": {
+          "type": "boolean"
+        },
+        "failed": {
+          "type": "boolean"
+        },
+        "exitReason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "interrupted",
+        "failed"
+      ]
+    },
+    "ObservedMemoryCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/MemoryCategory"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64000
+        },
+        "importance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "scope": {
+          "$ref": "#/$defs/MemoryScope"
+        },
+        "shareable": {
+          "type": "boolean"
+        },
+        "sourceType": {
+          "$ref": "#/$defs/MemorySourceType"
+        },
+        "expiresAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "category",
+        "content"
+      ]
+    },
+    "ObserveTurnRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "observationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "modelKey": {
+          "type": "string"
+        },
+        "observedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalMessage"
+          }
+        },
+        "usage": {
+          "$ref": "#/$defs/ContextUsageObservation"
+        },
+        "outcome": {
+          "$ref": "#/$defs/TurnOutcomeObservation"
+        },
+        "memoryCandidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObservedMemoryCandidate"
+          },
+          "maxItems": 128
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "observationId",
+        "host",
+        "sessionId",
+        "observedAtMs",
+        "messages",
+        "outcome"
+      ]
+    },
+    "TurnObservationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "observationId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "callbacks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HostCallbackRequest"
+          }
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "observationId",
+        "sessionId",
+        "accepted",
+        "revision",
+        "observedAtMs"
+      ]
+    },
+    "AuxiliaryRuntimePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "historianEnabled": {
+          "type": "boolean"
+        },
+        "historianThresholdPercentage": {
+          "type": "number",
+          "minimum": 0
+        },
+        "historianMinMessages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "historianProtectedTailMessages": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "historianTimeoutMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dreamerEnabled": {
+          "type": "boolean"
+        },
+        "dreamerIntervalMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "dreamerTimeoutMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sidekickEnabled": {
+          "type": "boolean"
+        },
+        "sidekickTimeoutMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "historianEnabled",
+        "historianThresholdPercentage",
+        "historianMinMessages",
+        "historianProtectedTailMessages",
+        "historianTimeoutMs",
+        "dreamerEnabled",
+        "dreamerIntervalMs",
+        "dreamerTimeoutMs",
+        "sidekickEnabled",
+        "sidekickTimeoutMs",
+        "maxAttempts"
+      ]
+    },
+    "AuxiliaryChatMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ]
+    },
+    "AuxiliaryStructuredInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ]
+    },
+    "AuxiliaryLlmCompleteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "const": "complete"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuxiliaryChatMessage"
+          }
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "mode",
+        "messages"
+      ]
+    },
+    "AuxiliaryLlmStructuredRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "const": "structured"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuxiliaryStructuredInput"
+          }
+        },
+        "jsonSchema": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "schemaName": {
+          "type": "string"
+        },
+        "systemPrompt": {
+          "type": "string"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "mode",
+        "instructions",
+        "input",
+        "jsonSchema",
+        "schemaName"
+      ]
+    },
+    "HostCallbackRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "callbackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "auxiliary_llm"
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task": {
+          "$ref": "#/$defs/AuxiliaryTaskName"
+        },
+        "taskKey": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "createdAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "deadlineAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "request": {
+          "$ref": "#/$defs/AuxiliaryLlmRequest"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "callbackId",
+        "kind",
+        "host",
+        "sessionId",
+        "task",
+        "taskKey",
+        "purpose",
+        "createdAtMs",
+        "deadlineAtMs",
+        "attempt",
+        "request"
+      ]
+    },
+    "HostCallbackSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "completed"
+        },
+        "text": {
+          "type": "string"
+        },
+        "parsed": {},
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/ContextUsageObservation"
+        }
+      },
+      "required": [
+        "status",
+        "text"
+      ]
+    },
+    "HostCallbackFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/HostCallbackFailureStatus"
+        },
+        "errorType": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "errorType"
+      ]
+    },
+    "ResolveHostCallbackRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "resolutionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "callbackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resolvedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "outcome": {
+          "$ref": "#/$defs/HostCallbackOutcome"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "resolutionId",
+        "host",
+        "sessionId",
+        "callbackId",
+        "attempt",
+        "resolvedAtMs",
+        "outcome"
+      ]
+    },
+    "HostCallbackResolutionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "resolutionId": {
+          "type": "string"
+        },
+        "callbackId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/HostCallbackResolutionStatus"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "callbacks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HostCallbackRequest"
+          }
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "resolutionId",
+        "callbackId",
+        "sessionId",
+        "accepted",
+        "status",
+        "revision"
+      ]
+    },
+    "MaintenancePollRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "pollId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "polledAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuxiliaryTaskName"
+          }
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "pollId",
+        "host",
+        "sessionId",
+        "polledAtMs"
+      ]
+    },
+    "MaintenancePollReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "pollId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "callbacks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HostCallbackRequest"
+          }
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "pollId",
+        "sessionId",
+        "revision",
+        "callbacks"
+      ]
+    },
+    "ExecuteContextToolRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "modelKey": {
+          "type": "string"
+        },
+        "toolName": {
+          "$ref": "#/$defs/ContextToolName"
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalMessage"
+          }
+        },
+        "invokedAtMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "host",
+        "sessionId",
+        "toolName",
+        "arguments",
+        "invokedAtMs"
+      ]
+    },
+    "ContextToolExecutionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "toolName": {
+          "$ref": "#/$defs/ContextToolName"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "output": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "sessionId",
+        "toolName",
+        "ok",
+        "output",
+        "revision"
+      ]
+    },
+    "SessionLifecycleRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action": {
+          "$ref": "#/$defs/SessionLifecycleAction"
+        },
+        "observedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "targetSessionId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "modelKey": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalMessage"
+          }
+        },
+        "auxiliaryPolicy": {
+          "$ref": "#/$defs/AuxiliaryRuntimePolicy"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "eventId",
+        "host",
+        "sessionId",
+        "action",
+        "observedAtMs"
+      ]
+    },
+    "SessionLifecycleReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/$defs/SessionLifecycleAction"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "targetSessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "eventId",
+        "sessionId",
+        "action",
+        "accepted",
+        "revision"
+      ]
+    },
+    "CacheFeedbackRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "usage": {
+          "$ref": "#/$defs/ContextUsageObservation"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "modelKey": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "eventId",
+        "host",
+        "sessionId",
+        "observedAtMs",
+        "usage"
+      ]
+    },
+    "CacheFeedbackReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cumulativeCacheReadTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cumulativeCacheWriteTokens": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "eventId",
+        "sessionId",
+        "accepted",
+        "revision",
+        "cumulativeCacheReadTokens",
+        "cumulativeCacheWriteTokens"
+      ]
+    },
+    "ToolEventRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedAtMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "phase": {
+          "$ref": "#/$defs/ToolEventPhase"
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "result": {},
+        "status": {
+          "type": "string"
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "eventId",
+        "host",
+        "sessionId",
+        "observedAtMs",
+        "phase",
+        "toolName"
+      ]
+    },
+    "ToolEventReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "eventId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "triggersQueued": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "eventId",
+        "sessionId",
+        "accepted",
+        "revision",
+        "triggersQueued"
+      ]
+    },
+    "ContextMutationTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blockId": {
+          "type": "string"
+        },
+        "blockIndex": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "messageId"
+      ]
+    },
+    "ContextMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/ContextMutationTarget"
+        },
+        "operation": {
+          "$ref": "#/$defs/ContextMutationKind"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "operation"
+      ]
+    },
+    "ContextInjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "$ref": "#/$defs/ContextInjectionSlot"
+        },
+        "content": {},
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot",
+        "content",
+        "epoch",
+        "fingerprint"
+      ]
+    },
+    "ContextRetain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "messageIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "protectedTailStart": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "messageIds"
+      ]
+    },
+    "ContextAccounting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "estimatedInputTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "hardLimitTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cacheDecision": {
+          "$ref": "#/$defs/CacheDecision"
+        }
+      },
+      "required": [
+        "estimatedInputTokens",
+        "hardLimitTokens",
+        "cacheDecision"
+      ]
+    },
+    "ContextPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/ContextDecision"
+        },
+        "retain": {
+          "$ref": "#/$defs/ContextRetain"
+        },
+        "mutations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextMutation"
+          }
+        },
+        "injections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextInjection"
+          }
+        },
+        "accounting": {
+          "$ref": "#/$defs/ContextAccounting"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "callbacks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HostCallbackRequest"
+          }
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "decision",
+        "retain",
+        "mutations",
+        "injections",
+        "accounting"
+      ]
+    },
+    "RuntimeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "RuntimeSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "$ref": "#/$defs/ContextRuntimeResult"
+        }
+      },
+      "required": [
+        "result"
+      ]
+    },
+    "RuntimeFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/RuntimeError"
+        }
+      },
+      "required": [
+        "error"
+      ]
+    },
+    "ContextRuntimeCall": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "context.compose"
+            },
+            "params": {
+              "$ref": "#/$defs/ComposeContextRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "turn.observe"
+            },
+            "params": {
+              "$ref": "#/$defs/ObserveTurnRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "tool.execute"
+            },
+            "params": {
+              "$ref": "#/$defs/ExecuteContextToolRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "session.lifecycle"
+            },
+            "params": {
+              "$ref": "#/$defs/SessionLifecycleRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "cache.observe"
+            },
+            "params": {
+              "$ref": "#/$defs/CacheFeedbackRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "tool.observe"
+            },
+            "params": {
+              "$ref": "#/$defs/ToolEventRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "maintenance.poll"
+            },
+            "params": {
+              "$ref": "#/$defs/MaintenancePollRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "const": "host.callback.resolve"
+            },
+            "params": {
+              "$ref": "#/$defs/ResolveHostCallbackRequest"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "ContextRuntimeResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ContextPlan"
+        },
+        {
+          "$ref": "#/$defs/TurnObservationReceipt"
+        },
+        {
+          "$ref": "#/$defs/ContextToolExecutionResult"
+        },
+        {
+          "$ref": "#/$defs/SessionLifecycleReceipt"
+        },
+        {
+          "$ref": "#/$defs/CacheFeedbackReceipt"
+        },
+        {
+          "$ref": "#/$defs/ToolEventReceipt"
+        },
+        {
+          "$ref": "#/$defs/MaintenancePollReceipt"
+        },
+        {
+          "$ref": "#/$defs/HostCallbackResolutionReceipt"
+        }
+      ]
+    }
+  }
+}

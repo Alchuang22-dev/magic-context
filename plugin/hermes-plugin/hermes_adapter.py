@@ -9,7 +9,8 @@ import math
 import re
 from typing import Any, Iterable
 
-PROTOCOL_VERSION = 1
+from .generated_protocol import PROTOCOL_VERSION
+
 _INJECTION_ORDER = {"stable_prefix": 0, "volatile_delta": 1, "tail_nudge": 2}
 _TRUNCATION_MARKER = "\n...[bounded by Magic Context safe fallback]...\n"
 _TAG_PREFIX = re.compile(r"^(?:§\d+§\s*)+")
@@ -102,14 +103,14 @@ def _canonical_content(
                 }
             )
     if message.get("role") == "tool":
-        blocks.append(
-            {
-                "kind": "tool_result",
-                "callId": str(message.get("tool_call_id", "")),
-                "name": str(message.get("name", "")) or None,
-                "output": copy.deepcopy(content),
-            }
-        )
+        tool_result = {
+            "kind": "tool_result",
+            "callId": str(message.get("tool_call_id", "")),
+            "output": copy.deepcopy(content),
+        }
+        if message.get("name"):
+            tool_result["name"] = str(message["name"])
+        blocks.append(tool_result)
     for index, block in enumerate(blocks):
         native_id = block.get("id") or block.get("callId") or index
         block["id"] = f"{message_id}:block:{block.get('kind', 'opaque')}:{native_id}:{index}"

@@ -42,3 +42,27 @@ triggers, Sidekick augmentation, and tag mutations before compose.
 Host-specific message codec, hook registration, usage/context facts, native
 tool registration, and auxiliary-LLM execution. It must not implement tagging,
 scheduling, persistence, recall, or injection policy.
+
+## Protocol IDL
+
+The single editable source for every runtime call and result shape. JSON
+Schema and TS/Python/Rust bindings are generated from it; handwritten wire
+types are forbidden.
+
+## Conformance golden
+
+A language-neutral positive or negative protocol example with one expected
+acceptance result. Every generated language validator must produce the same
+outcome for every golden.
+
+## Runtime artifact
+
+A self-contained, platform-specific executable plus a manifest binding its
+binary checksum to the protocol version, IDL checksum, and JSON Schema
+checksum.
+
+## Hermes release bundle
+
+A platform-specific archive containing the thin Hermes Agent Adapter, its
+generated Python binding, the matching Runtime artifact, protocol manifest,
+JSON Schema, license, and checksums.

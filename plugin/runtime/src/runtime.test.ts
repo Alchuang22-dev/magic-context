@@ -438,7 +438,7 @@ describe("turn.observe", () => {
 		);
 
 		expect(response.error.code).toBe("INVALID_REQUEST");
-		expect(response.error.message).toContain("category is unsupported");
+		expect(response.error.message).toContain("generated protocol");
 	});
 });
 
@@ -455,7 +455,8 @@ describe("stdio Interface", () => {
 		);
 		const malformed = JSON.parse(await processRuntimeLine(runtime, "not-json"));
 
-		expect(unknown.error.code).toBe("METHOD_NOT_FOUND");
+		expect(unknown.error.code).toBe("INVALID_REQUEST");
+		expect(unknown.error.message).toContain("generated protocol");
 		expect(malformed.error.code).toBe("RUNTIME_ERROR");
 	});
 
@@ -479,7 +480,7 @@ describe("stdio Interface", () => {
 		);
 
 		expect(response.error.code).toBe("INVALID_REQUEST");
-		expect(response.error.message).toContain("kind is unsupported");
+		expect(response.error.message).toContain("generated protocol");
 	});
 
 	test("serves an actual NDJSON stdio process", async () => {

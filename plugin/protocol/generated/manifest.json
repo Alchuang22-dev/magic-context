@@ -1,0 +1,39 @@
+{
+  "protocolVersion": 1,
+  "idlSha256": "8ca5240204fa735aef0d37cb7b53b941ffec836e60060390fd4ac33960e1a870",
+  "schemaSha256": "4734ee6a9ff9f3c18811611f677af796b253d44d88507019f74e29f089fc794e",
+  "methods": {
+    "context.compose": {
+      "params": "ComposeContextRequest",
+      "result": "ContextPlan"
+    },
+    "turn.observe": {
+      "params": "ObserveTurnRequest",
+      "result": "TurnObservationReceipt"
+    },
+    "tool.execute": {
+      "params": "ExecuteContextToolRequest",
+      "result": "ContextToolExecutionResult"
+    },
+    "session.lifecycle": {
+      "params": "SessionLifecycleRequest",
+      "result": "SessionLifecycleReceipt"
+    },
+    "cache.observe": {
+      "params": "CacheFeedbackRequest",
+      "result": "CacheFeedbackReceipt"
+    },
+    "tool.observe": {
+      "params": "ToolEventRequest",
+      "result": "ToolEventReceipt"
+    },
+    "maintenance.poll": {
+      "params": "MaintenancePollRequest",
+      "result": "MaintenancePollReceipt"
+    },
+    "host.callback.resolve": {
+      "params": "ResolveHostCallbackRequest",
+      "result": "HostCallbackResolutionReceipt"
+    }
+  }
+}

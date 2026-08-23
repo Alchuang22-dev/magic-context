@@ -1,0 +1,286 @@
+[
+  {
+    "id": "call-compose-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "context.compose",
+      "params": {
+        "protocolVersion": 1,
+        "requestId": "req-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "budgetTokens": 4096,
+        "capabilities": {
+          "preRequestTransform": true,
+          "stableMessageIds": true,
+          "stablePartIds": true,
+          "usageObservation": true,
+          "auxiliaryLlm": true,
+          "toolRegistration": true,
+          "toolEvents": true,
+          "requestBlocking": false,
+          "systemSuffixInjection": true,
+          "promptCacheFacts": true,
+          "blockIndexMutations": true
+        },
+        "messages": [
+          {
+            "id": "m1",
+            "ordinal": 0,
+            "role": "user",
+            "content": [{ "id": "b1", "kind": "text", "text": "hello" }]
+          }
+        ],
+        "usage": { "inputTokens": 10, "contextLimitTokens": 4096 }
+      }
+    }
+  },
+  {
+    "id": "call-observe-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "turn.observe",
+      "params": {
+        "protocolVersion": 1,
+        "observationId": "obs-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "observedAtMs": 1000,
+        "messages": [],
+        "outcome": { "interrupted": false, "failed": false },
+        "memoryCandidates": [
+          { "category": "ARCHITECTURE", "content": "Runtime owns policy." }
+        ]
+      }
+    }
+  },
+  {
+    "id": "call-tool-execute-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "tool.execute",
+      "params": {
+        "protocolVersion": 1,
+        "requestId": "tool-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "toolName": "ctx_search",
+        "arguments": { "query": "runtime" },
+        "invokedAtMs": 1001
+      }
+    }
+  },
+  {
+    "id": "call-lifecycle-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "session.lifecycle",
+      "params": {
+        "protocolVersion": 1,
+        "eventId": "life-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "action": "clone",
+        "observedAtMs": 1002,
+        "targetSessionId": "session-2"
+      }
+    }
+  },
+  {
+    "id": "call-cache-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "cache.observe",
+      "params": {
+        "protocolVersion": 1,
+        "eventId": "cache-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "observedAtMs": 1003,
+        "usage": { "cacheReadTokens": 40, "cacheWriteTokens": 5 }
+      }
+    }
+  },
+  {
+    "id": "call-tool-event-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "tool.observe",
+      "params": {
+        "protocolVersion": 1,
+        "eventId": "event-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "observedAtMs": 1004,
+        "phase": "post",
+        "toolName": "read_file",
+        "result": { "characters": 9000 },
+        "durationMs": 12
+      }
+    }
+  },
+  {
+    "id": "call-maintenance-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "maintenance.poll",
+      "params": {
+        "protocolVersion": 1,
+        "pollId": "poll-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "polledAtMs": 1005,
+        "tasks": ["historian", "dreamer"]
+      }
+    }
+  },
+  {
+    "id": "call-callback-valid",
+    "target": "call",
+    "valid": true,
+    "value": {
+      "method": "host.callback.resolve",
+      "params": {
+        "protocolVersion": 1,
+        "resolutionId": "resolution-1",
+        "host": "golden",
+        "sessionId": "session-1",
+        "callbackId": "callback-1",
+        "attempt": 1,
+        "resolvedAtMs": 1006,
+        "outcome": { "status": "completed", "text": "done" }
+      }
+    }
+  },
+  {
+    "id": "result-plan-valid",
+    "target": "result",
+    "method": "context.compose",
+    "valid": true,
+    "value": {
+      "protocolVersion": 1,
+      "requestId": "req-1",
+      "decision": "serve",
+      "retain": { "messageIds": ["m1"] },
+      "mutations": [
+        {
+          "target": { "messageId": "m1", "blockIndex": 0 },
+          "operation": "prefix_tag",
+          "content": "§1§"
+        }
+      ],
+      "injections": [],
+      "accounting": {
+        "estimatedInputTokens": 14,
+        "hardLimitTokens": 4096,
+        "cacheDecision": "bust_required"
+      }
+    }
+  },
+  {
+    "id": "result-tool-valid",
+    "target": "result",
+    "method": "tool.execute",
+    "valid": true,
+    "value": {
+      "protocolVersion": 1,
+      "requestId": "tool-1",
+      "sessionId": "session-1",
+      "toolName": "ctx_search",
+      "ok": true,
+      "output": "[]",
+      "revision": 2
+    }
+  },
+  {
+    "id": "call-unknown-method",
+    "target": "call",
+    "valid": false,
+    "value": { "method": "context.unknown", "params": {} }
+  },
+  {
+    "id": "call-version-rejected",
+    "target": "call",
+    "valid": false,
+    "value": {
+      "method": "maintenance.poll",
+      "params": {
+        "protocolVersion": 2,
+        "pollId": "poll-2",
+        "host": "golden",
+        "sessionId": "session-1",
+        "polledAtMs": 1007
+      }
+    }
+  },
+  {
+    "id": "call-missing-required",
+    "target": "call",
+    "valid": false,
+    "value": {
+      "method": "cache.observe",
+      "params": {
+        "protocolVersion": 1,
+        "eventId": "cache-2",
+        "host": "golden",
+        "sessionId": "session-1",
+        "observedAtMs": 1008
+      }
+    }
+  },
+  {
+    "id": "call-unknown-field",
+    "target": "call",
+    "valid": false,
+    "value": {
+      "method": "maintenance.poll",
+      "params": {
+        "protocolVersion": 1,
+        "pollId": "poll-3",
+        "host": "golden",
+        "sessionId": "session-1",
+        "polledAtMs": 1009,
+        "surprise": true
+      }
+    }
+  },
+  {
+    "id": "call-enum-rejected",
+    "target": "call",
+    "valid": false,
+    "value": {
+      "method": "tool.execute",
+      "params": {
+        "protocolVersion": 1,
+        "requestId": "tool-2",
+        "host": "golden",
+        "sessionId": "session-1",
+        "toolName": "ctx_destroy",
+        "arguments": {},
+        "invokedAtMs": 1010
+      }
+    }
+  },
+  {
+    "id": "result-negative-revision",
+    "target": "result",
+    "method": "tool.execute",
+    "valid": false,
+    "value": {
+      "protocolVersion": 1,
+      "requestId": "tool-3",
+      "sessionId": "session-1",
+      "toolName": "ctx_search",
+      "ok": true,
+      "output": "[]",
+      "revision": -1
+    }
+  }
+]

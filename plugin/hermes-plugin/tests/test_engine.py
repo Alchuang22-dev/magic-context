@@ -119,6 +119,7 @@ class MagicContextEngineTests(unittest.TestCase):
                 self.tasks = []
                 self.engine = None
                 self.hooks = {}
+                self.cli_commands = []
 
             def register_auxiliary_task(self, **kwargs):
                 self.tasks.append(kwargs)
@@ -128,6 +129,9 @@ class MagicContextEngineTests(unittest.TestCase):
 
             def register_hook(self, name, callback):
                 self.hooks[name] = callback
+
+            def register_cli_command(self, *args, **kwargs):
+                self.cli_commands.append((args, kwargs))
 
         context = FakeContext()
         module.register(context)
@@ -143,6 +147,7 @@ class MagicContextEngineTests(unittest.TestCase):
         self.assertTrue(context.engine.auxiliary_policy["historianEnabled"])
         self.assertFalse(context.engine.auxiliary_policy["sidekickEnabled"])
         self.assertEqual(context.tasks[0]["defaults"]["timeout"], 600)
+        self.assertEqual(context.cli_commands[0][0][0], "magic-context")
         self.assertEqual(
             set(context.hooks),
             {"pre_tool_call", "post_tool_call", "on_session_reset", "on_session_finalize"},
@@ -169,6 +174,70 @@ class MagicContextEngineTests(unittest.TestCase):
         )
         self.assertEqual(len(canonical[0]["content"]), 1)
         self.assertEqual(canonical[0]["content"][0]["kind"], "tool_result")
+
+    def test_snapshot_matches_cross_host_adapter_golden(self):
+        expected = json.loads(
+            (PLUGIN_ROOT.parent / "e2e" / "adapter-golden.json").read_text(
+                encoding="utf8"
+            )
+        )["semanticBlocks"]
+        canonical, _ = adapter.snapshot_messages(
+            [
+                {"role": "user", "content": "inspect this"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": '{"path":"a.txt"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-1",
+                    "name": "read",
+                    "content": "contents",
+                },
+            ]
+        )
+        actual = []
+        for message in canonical:
+            for block in message["content"]:
+                if block["kind"] == "text" and block["text"]:
+                    actual.append(
+                        {
+                            "role": message["role"],
+                            "kind": "text",
+                            "value": block["text"],
+                        }
+                    )
+                elif block["kind"] == "tool_call":
+                    actual.append(
+                        {
+                            "role": "assistant",
+                            "kind": "tool_call",
+                            "callId": block["callId"],
+                            "name": block["name"],
+                            "value": block["input"],
+                        }
+                    )
+                elif block["kind"] == "tool_result":
+                    actual.append(
+                        {
+                            "role": "tool",
+                            "kind": "tool_result",
+                            "callId": block["callId"],
+                            "name": block.get("name"),
+                            "value": block["output"],
+                        }
+                    )
+        self.assertEqual(actual, expected)
 
     def test_in_budget_without_runtime_is_byte_equivalent(self):
         messages = [
