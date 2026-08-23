@@ -36,3 +36,8 @@ The Hermes bridge currently starts the command once per call; durable runtime
 state makes those calls equivalent to the runtime's long-running NDJSON mode.
 A future persistent bridge can reuse the same protocol without changing the
 Hermes Adapter.
+
+Hermes project identity is forwarded from `project_id`, `project_path`, `cwd`,
+or `working_directory` session metadata. A historian integration may attach
+`memory_candidates` to `on_turn_complete`; Hermes only translates that field,
+while validation, persistence, deduplication, and recall stay in the runtime.

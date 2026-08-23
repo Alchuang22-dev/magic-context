@@ -12,6 +12,8 @@ import {
 } from "@cortexkit/magic-context-core-plugin";
 
 import { processRuntimeLine } from "./cli";
+import { RuntimeMemory } from "./memory";
+import { MemoryRuntimeMemoryStore } from "./memory-store";
 import { MagicContextRuntime } from "./runtime";
 import {
 	JsonDirectoryRuntimeStateStore,
@@ -330,8 +332,98 @@ describe("turn.observe", () => {
 		expect(state.latestObservation?.observationId).toBe("newer");
 		const latestRecord = state.observations.at(-1);
 		expect(latestRecord?.messageCount).toBe(1);
+		expect(latestRecord?.memoryCandidateCount).toBe(0);
 		if (!latestRecord) throw new Error("expected observation metadata");
 		expect("messages" in latestRecord).toBe(false);
+	});
+
+	test("stores observed memory candidates and recalls them across sessions", async () => {
+		const memoryStore = new MemoryRuntimeMemoryStore();
+		const memory = new RuntimeMemory(memoryStore);
+		const runtime = new MagicContextRuntime({
+			store: new MemoryRuntimeStateStore(),
+			memory,
+			now: () => 20_000,
+		});
+		const observed = observation({
+			projectId: "project-a",
+			memoryCandidates: [
+				{
+					category: "PROJECT_RULES",
+					content: "Use Bun for package scripts and tests.",
+					importance: 80,
+				},
+			],
+		});
+
+		await runtime.handle({ method: "turn.observe", params: observed });
+		await runtime.handle({ method: "turn.observe", params: observed });
+		const first = await runtime.handle({
+			method: "context.compose",
+			params: composeRequest(
+				[message("user", 1, "user", "Which package scripts should I use?")],
+				{
+					requestId: "recall-1",
+					sessionId: "session-2",
+					projectId: "project-a",
+					budgetTokens: 4_000,
+					capabilities: resolveCapabilities({
+						systemSuffixInjection: true,
+					}),
+				},
+			),
+		});
+		const second = await runtime.handle({
+			method: "context.compose",
+			params: composeRequest(
+				[message("user", 1, "user", "Which package scripts should I use?")],
+				{
+					requestId: "recall-2",
+					sessionId: "session-2",
+					projectId: "project-a",
+					budgetTokens: 4_000,
+					capabilities: resolveCapabilities({
+						systemSuffixInjection: true,
+					}),
+				},
+			),
+		});
+
+		if (!("injections" in first) || !("injections" in second)) {
+			throw new Error("expected ContextPlan");
+		}
+		expect(first.injections).toHaveLength(1);
+		expect(first.injections[0].slot).toBe("stable_prefix");
+		expect(String(first.injections[0].content)).toContain(
+			"Use Bun for package scripts and tests.",
+		);
+		expect(first.accounting.cacheDecision).toBe("bust_required");
+		expect(second.accounting.cacheDecision).toBe("hit_safe");
+		const stored = await memoryStore.readProject("project-a");
+		expect(stored.memories).toHaveLength(1);
+		expect(stored.memories[0].seenCount).toBe(1);
+	});
+
+	test("rejects malformed memory candidates at the runtime Interface", async () => {
+		const runtime = new MagicContextRuntime({
+			store: new MemoryRuntimeStateStore(),
+		});
+		const response = JSON.parse(
+			await processRuntimeLine(
+				runtime,
+				JSON.stringify({
+					method: "turn.observe",
+					params: observation({
+						memoryCandidates: [
+							{ category: "SECRETS", content: "do not store" },
+						] as never,
+					}),
+				}),
+			),
+		);
+
+		expect(response.error.code).toBe("INVALID_REQUEST");
+		expect(response.error.message).toContain("category is unsupported");
 	});
 });
 
@@ -399,5 +491,59 @@ describe("stdio Interface", () => {
 		const response = JSON.parse(output.trim());
 		expect(response.result.accepted).toBe(true);
 		expect(response.result.observationId).toBe("observation-1");
+	});
+
+	test("recalls durable memory across separate one-shot processes", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "magic-context-runtime-"));
+		temporaryDirectories.push(directory);
+		const invoke = async (call: unknown) => {
+			const child = Bun.spawn(
+				[
+					process.execPath,
+					join(import.meta.dir, "cli.ts"),
+					"--state-dir",
+					directory,
+				],
+				{ stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+			);
+			child.stdin.write(`${JSON.stringify(call)}\n`);
+			child.stdin.end();
+			const output = await new Response(child.stdout).text();
+			const errorOutput = await new Response(child.stderr).text();
+			expect(await child.exited, errorOutput).toBe(0);
+			return JSON.parse(output.trim());
+		};
+
+		await invoke({
+			method: "turn.observe",
+			params: observation({
+				projectId: "project-persisted",
+				memoryCandidates: [
+					{
+						category: "ARCHITECTURE",
+						content: "The runtime owns durable memory recall.",
+					},
+				],
+			}),
+		});
+		const response = await invoke({
+			method: "context.compose",
+			params: composeRequest(
+				[message("user", 1, "user", "Who owns memory recall?")],
+				{
+					requestId: "separate-process-compose",
+					projectId: "project-persisted",
+					budgetTokens: 4_000,
+					capabilities: resolveCapabilities({
+						systemSuffixInjection: true,
+					}),
+				},
+			),
+		});
+
+		expect(response.result.injections).toHaveLength(1);
+		expect(response.result.injections[0].content).toContain(
+			"runtime owns durable memory recall",
+		);
 	});
 });

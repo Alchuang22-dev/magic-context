@@ -2,6 +2,7 @@ import {
 	CORE_PROTOCOL_VERSION,
 	type ComposeContextRequest,
 	type ContextUsageObservation,
+	MEMORY_CATEGORIES,
 	type ObserveTurnRequest,
 } from "@cortexkit/magic-context-core-plugin";
 
@@ -134,6 +135,94 @@ function validateMessages(value: unknown): void {
 	}
 }
 
+function validateMemoryCandidates(value: unknown): void {
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		throw new InvalidRuntimeRequestError("memoryCandidates must be an array");
+	}
+	if (value.length > 128) {
+		throw new InvalidRuntimeRequestError(
+			"memoryCandidates must contain at most 128 items",
+		);
+	}
+	const categories = new Set<string>(MEMORY_CATEGORIES);
+	const scopes = new Set(["project", "ecosystem", "universe"]);
+	const sourceTypes = new Set(["historian", "agent", "dreamer", "tool"]);
+	for (const [index, candidate] of value.entries()) {
+		const field = `memoryCandidates[${index}]`;
+		if (!isRecord(candidate)) {
+			throw new InvalidRuntimeRequestError(`${field} must be an object`);
+		}
+		if (
+			typeof candidate.category !== "string" ||
+			!categories.has(candidate.category)
+		) {
+			throw new InvalidRuntimeRequestError(`${field}.category is unsupported`);
+		}
+		requireString(candidate.content, `${field}.content`);
+		if (candidate.content.trim() === "") {
+			throw new InvalidRuntimeRequestError(
+				`${field}.content must not be blank`,
+			);
+		}
+		if (candidate.content.length > 64_000) {
+			throw new InvalidRuntimeRequestError(
+				`${field}.content must not exceed 64000 characters`,
+			);
+		}
+		if (candidate.importance !== undefined) {
+			requireFiniteNonNegative(candidate.importance, `${field}.importance`);
+			if (Number(candidate.importance) > 100) {
+				throw new InvalidRuntimeRequestError(
+					`${field}.importance must not exceed 100`,
+				);
+			}
+		}
+		if (
+			candidate.scope !== undefined &&
+			(typeof candidate.scope !== "string" || !scopes.has(candidate.scope))
+		) {
+			throw new InvalidRuntimeRequestError(`${field}.scope is unsupported`);
+		}
+		if (
+			candidate.sourceType !== undefined &&
+			(typeof candidate.sourceType !== "string" ||
+				!sourceTypes.has(candidate.sourceType))
+		) {
+			throw new InvalidRuntimeRequestError(
+				`${field}.sourceType is unsupported`,
+			);
+		}
+		if (
+			candidate.shareable !== undefined &&
+			typeof candidate.shareable !== "boolean"
+		) {
+			throw new InvalidRuntimeRequestError(
+				`${field}.shareable must be a boolean`,
+			);
+		}
+		requireFiniteNonNegative(candidate.expiresAtMs, `${field}.expiresAtMs`, {
+			optional: true,
+		});
+		if (candidate.metadata !== undefined && !isRecord(candidate.metadata)) {
+			throw new InvalidRuntimeRequestError(
+				`${field}.metadata must be an object`,
+			);
+		}
+		if (candidate.metadata !== undefined) {
+			try {
+				if (JSON.stringify(candidate.metadata).length > 64_000) {
+					throw new Error("metadata too large");
+				}
+			} catch {
+				throw new InvalidRuntimeRequestError(
+					`${field}.metadata must be bounded JSON`,
+				);
+			}
+		}
+	}
+}
+
 function validateCommon(
 	value: unknown,
 ): asserts value is Record<string, unknown> {
@@ -202,6 +291,7 @@ export function validateObserveRequest(value: unknown): ObserveTurnRequest {
 		);
 	}
 	requireOptionalString(value.outcome.exitReason, "outcome.exitReason");
+	validateMemoryCandidates(value.memoryCandidates);
 	return structuredClone(value) as unknown as ObserveTurnRequest;
 }
 

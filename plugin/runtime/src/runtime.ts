@@ -11,8 +11,14 @@ import type {
 import {
 	composeContext,
 	DEFAULT_RUNTIME_POLICY,
+	deriveMemoryBudgetTokens,
 	type RuntimePolicyConfig,
 } from "./compose";
+import { memoryProjectKey, RuntimeMemory } from "./memory";
+import {
+	JsonDirectoryRuntimeMemoryStore,
+	MemoryRuntimeMemoryStore,
+} from "./memory-store";
 import {
 	JsonDirectoryRuntimeStateStore,
 	type RuntimeSessionIdentity,
@@ -31,6 +37,7 @@ export interface RuntimeCallEnvelope {
 
 export interface MagicContextRuntimeOptions {
 	store: RuntimeStateStore;
+	memory?: RuntimeMemory;
 	policy?: Partial<RuntimePolicyConfig>;
 	now?: () => number;
 }
@@ -71,6 +78,12 @@ function normalizedPolicy(
 			(overrides.memoryBudgetTokens ?? -1) >= 0
 				? Number(overrides.memoryBudgetTokens)
 				: DEFAULT_RUNTIME_POLICY.memoryBudgetTokens,
+		memoryBudgetPercentage:
+			Number.isFinite(overrides.memoryBudgetPercentage) &&
+			(overrides.memoryBudgetPercentage ?? -1) >= 0 &&
+			(overrides.memoryBudgetPercentage ?? 2) <= 1
+				? Number(overrides.memoryBudgetPercentage)
+				: DEFAULT_RUNTIME_POLICY.memoryBudgetPercentage,
 		cacheTtl:
 			typeof overrides.cacheTtl === "string" && overrides.cacheTtl.length > 0
 				? overrides.cacheTtl
@@ -88,9 +101,12 @@ export class MagicContextRuntime {
 	readonly #store: RuntimeStateStore;
 	readonly #policy: RuntimePolicyConfig;
 	readonly #now: () => number;
+	readonly #memory: RuntimeMemory;
 
 	constructor(options: MagicContextRuntimeOptions) {
 		this.#store = options.store;
+		this.#memory =
+			options.memory ?? new RuntimeMemory(new MemoryRuntimeMemoryStore());
 		this.#policy = normalizedPolicy(options.policy);
 		this.#now = options.now ?? Date.now;
 	}
@@ -111,18 +127,43 @@ export class MagicContextRuntime {
 
 	async #compose(params: unknown): Promise<ContextPlan> {
 		const request = validateComposeRequest(params);
-		return this.#store.updateSession(identity(request), (state) => {
+		const sessionIdentity = identity(request);
+		const snapshot = await this.#store.readSession(sessionIdentity);
+		if (snapshot.lastCompose?.requestId === request.requestId) {
+			return snapshot.lastCompose.plan;
+		}
+		const memoryBudget = deriveMemoryBudgetTokens(
+			request,
+			snapshot,
+			this.#policy,
+		);
+		const memoryInjection = await this.#memory.recallAndRender({
+			projectKey: memoryProjectKey(request),
+			query: latestUserQuery(request.messages),
+			budgetTokens: memoryBudget,
+			excludeIds: visibleMemoryIds(request.messages),
+			nowMs: this.#now(),
+		});
+		return this.#store.updateSession(sessionIdentity, (state) => {
 			if (state.lastCompose?.requestId === request.requestId) {
 				return { state, result: state.lastCompose.plan };
 			}
 			const nowMs = this.#now();
-			const composed = composeContext(request, state, this.#policy, nowMs);
+			const composed = composeContext(
+				request,
+				state,
+				this.#policy,
+				nowMs,
+				memoryInjection,
+			);
 			const next = {
 				...state,
 				revision: state.revision + 1,
 				lastComposeAtMs: nowMs,
 				drainLatchActiveSinceMs: composed.drainLatchActiveSinceMs,
 				deferredExecute: composed.deferredExecute,
+				activeMemoryFingerprint: composed.activeMemoryFingerprint,
+				activeMemoryEpoch: composed.activeMemoryEpoch,
 				lastCompose: {
 					requestId: request.requestId,
 					plan: composed.plan,
@@ -134,7 +175,19 @@ export class MagicContextRuntime {
 
 	async #observe(params: unknown): Promise<TurnObservationReceipt> {
 		const observation = validateObserveRequest(params);
-		return this.#store.updateSession(identity(observation), (state) => {
+		const sessionIdentity = identity(observation);
+		const snapshot = await this.#store.readSession(sessionIdentity);
+		if (snapshot.recentObservationIds.includes(observation.observationId)) {
+			return this.#receipt(observation, false, snapshot.revision);
+		}
+		await this.#memory.remember({
+			projectKey: memoryProjectKey(observation),
+			sessionId: observation.sessionId,
+			observationId: observation.observationId,
+			observedAtMs: observation.observedAtMs,
+			candidates: observation.memoryCandidates ?? [],
+		});
+		return this.#store.updateSession(sessionIdentity, (state) => {
 			if (state.recentObservationIds.includes(observation.observationId)) {
 				return {
 					state,
@@ -142,10 +195,15 @@ export class MagicContextRuntime {
 				};
 			}
 			const revision = state.revision + 1;
-			const { messages, ...observationMetadata } = observation;
+			const { messages, memoryCandidates, ...observationMetadata } =
+				observation;
 			const observations = [
 				...state.observations,
-				{ ...observationMetadata, messageCount: messages.length },
+				{
+					...observationMetadata,
+					messageCount: messages.length,
+					memoryCandidateCount: memoryCandidates?.length ?? 0,
+				},
 			].slice(-this.#policy.maxObservedTurns);
 			const recentObservationIds = [
 				...state.recentObservationIds,
@@ -215,12 +273,52 @@ export function runtimePolicyFromEnvironment(
 			environment,
 			"MAGIC_CONTEXT_MEMORY_BUDGET_TOKENS",
 		),
+		memoryBudgetPercentage: numericEnvironment(
+			environment,
+			"MAGIC_CONTEXT_MEMORY_BUDGET_PERCENTAGE",
+		),
 		cacheTtl: environment.MAGIC_CONTEXT_CACHE_TTL,
 		maxObservedTurns: numericEnvironment(
 			environment,
 			"MAGIC_CONTEXT_MAX_OBSERVED_TURNS",
 		),
 	};
+}
+
+function latestUserQuery(
+	messages: readonly import("@cortexkit/magic-context-core-plugin").CanonicalMessage[],
+): string {
+	const latest = [...messages]
+		.reverse()
+		.find((message) => message.role === "user");
+	if (!latest) return "";
+	return latest.content
+		.map((block) => {
+			if (block.kind === "text" || block.kind === "thinking") return block.text;
+			return "";
+		})
+		.filter(Boolean)
+		.join("\n");
+}
+
+function visibleMemoryIds(
+	messages: readonly import("@cortexkit/magic-context-core-plugin").CanonicalMessage[],
+): number[] {
+	const ids = new Set<number>();
+	for (const message of messages) {
+		for (const block of message.content) {
+			if (
+				(block.kind !== "text" && block.kind !== "thinking") ||
+				!block.text.includes("<project-memory>")
+			) {
+				continue;
+			}
+			for (const match of block.text.matchAll(/^#(\d+):/gm)) {
+				ids.add(Number(match[1]));
+			}
+		}
+	}
+	return [...ids];
 }
 
 export function defaultRuntimeStateDirectory(
@@ -238,9 +336,11 @@ export function defaultRuntimeStateDirectory(
 export function createDefaultRuntime(
 	environment: NodeJS.ProcessEnv = process.env,
 ): MagicContextRuntime {
+	const directory = defaultRuntimeStateDirectory(environment);
 	return new MagicContextRuntime({
-		store: new JsonDirectoryRuntimeStateStore(
-			defaultRuntimeStateDirectory(environment),
+		store: new JsonDirectoryRuntimeStateStore(directory),
+		memory: new RuntimeMemory(
+			new JsonDirectoryRuntimeMemoryStore(join(directory, "memories")),
 		),
 		policy: runtimePolicyFromEnvironment(environment),
 	});

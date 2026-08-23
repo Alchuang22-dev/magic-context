@@ -3,7 +3,11 @@
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-
+import { RuntimeMemory } from "./memory";
+import {
+	JsonDirectoryRuntimeMemoryStore,
+	MemoryRuntimeMemoryStore,
+} from "./memory-store";
 import {
 	createDefaultRuntime,
 	MagicContextRuntime,
@@ -46,6 +50,7 @@ function runtimeFromArguments(args: readonly string[]): MagicContextRuntime {
 	if (args.includes("--memory")) {
 		return new MagicContextRuntime({
 			store: new MemoryRuntimeStateStore(),
+			memory: new RuntimeMemory(new MemoryRuntimeMemoryStore()),
 			policy: runtimePolicyFromEnvironment(),
 		});
 	}
@@ -55,6 +60,11 @@ function runtimeFromArguments(args: readonly string[]): MagicContextRuntime {
 		if (!stateDirectory) throw new Error("--state-dir requires a path");
 		return new MagicContextRuntime({
 			store: new JsonDirectoryRuntimeStateStore(stateDirectory),
+			memory: new RuntimeMemory(
+				new JsonDirectoryRuntimeMemoryStore(
+					resolve(stateDirectory, "memories"),
+				),
+			),
 			policy: runtimePolicyFromEnvironment(),
 		});
 	}

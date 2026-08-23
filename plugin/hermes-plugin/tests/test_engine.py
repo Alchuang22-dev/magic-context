@@ -206,11 +206,15 @@ class MagicContextEngineTests(unittest.TestCase):
             self.assertEqual(method, "turn.observe")
             self.assertEqual(request["observationId"], "turn-7")
             self.assertEqual(request["sessionId"], "session-7")
+            self.assertEqual(request["projectId"], "project-a")
             self.assertEqual(request["messages"][0]["role"], "user")
             self.assertEqual(request["messages"][0]["content"][0]["kind"], "text")
             self.assertEqual(request["usage"]["inputTokens"], 120)
             self.assertEqual(request["usage"]["contextLimitTokens"], 4000)
             self.assertEqual(request["outcome"]["exitReason"], "complete")
+            self.assertEqual(
+                request["memoryCandidates"][0]["category"], "PROJECT_RULES"
+            )
             observed.set()
             return {
                 "protocolVersion": 1,
@@ -223,12 +227,20 @@ class MagicContextEngineTests(unittest.TestCase):
 
         runtime = FakeRuntime(responder)
         engine = MagicContextEngine(runtime=runtime, context_length=4000)
-        engine.on_session_start("session-7", model="openai/test")
+        engine.on_session_start(
+            "session-7", model="openai/test", project_id="project-a"
+        )
         engine.on_turn_complete(
             [{"role": "user", "content": "hello"}],
             {"input_tokens": 120, "output_tokens": 8},
             turn_id="turn-7",
             turn_exit_reason="complete",
+            memory_candidates=[
+                {
+                    "category": "PROJECT_RULES",
+                    "content": "Use Bun for package scripts.",
+                }
+            ],
         )
 
         self.assertTrue(observed.wait(1.0))

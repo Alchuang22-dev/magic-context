@@ -14,7 +14,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/compose.ts src/runtime.ts src/state-store.ts src/validation.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/compose.ts src/runtime.ts src/state-store.ts src/memory.ts src/memory-store.ts src/validation.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "biome check src",
@@ -28,6 +28,14 @@
     "./state-store": {
       "types": "./dist/state-store.d.ts",
       "import": "./dist/state-store.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js"
+    },
+    "./memory-store": {
+      "types": "./dist/memory-store.d.ts",
+      "import": "./dist/memory-store.js"
     }
   },
   "dependencies": {

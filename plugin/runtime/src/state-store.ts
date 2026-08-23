@@ -1,14 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
-import {
-	mkdir,
-	open,
-	readFile,
-	rename,
-	stat,
-	unlink,
-	writeFile,
-} from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 import type {
 	ContextPlan,
@@ -16,6 +6,11 @@ import type {
 	DeferredExecuteIntent,
 	ObserveTurnRequest,
 } from "@cortexkit/magic-context-core-plugin";
+
+import {
+	LockedJsonDirectory,
+	type LockedJsonDirectoryOptions,
+} from "./locked-json-directory";
 
 export const RUNTIME_STATE_SCHEMA_VERSION = 1 as const;
 
@@ -32,6 +27,7 @@ export interface RuntimeTurnRecord {
 	modelKey?: string;
 	observedAtMs: number;
 	messageCount: number;
+	memoryCandidateCount?: number;
 	usage?: ContextUsageObservation;
 	outcome: ObserveTurnRequest["outcome"];
 }
@@ -44,6 +40,8 @@ export interface RuntimeSessionState extends RuntimeSessionIdentity {
 	latestUsage?: ContextUsageObservation;
 	drainLatchActiveSinceMs?: number;
 	deferredExecute?: DeferredExecuteIntent;
+	activeMemoryFingerprint?: string;
+	activeMemoryEpoch?: number;
 	recentObservationIds: string[];
 	observations: RuntimeTurnRecord[];
 	latestObservation?: ObserveTurnRequest;
@@ -59,6 +57,7 @@ export type SessionStateUpdate<T> = (state: RuntimeSessionState) => {
 };
 
 export interface RuntimeStateStore {
+	readSession(identity: RuntimeSessionIdentity): Promise<RuntimeSessionState>;
 	updateSession<T>(
 		identity: RuntimeSessionIdentity,
 		update: SessionStateUpdate<T>,
@@ -94,6 +93,13 @@ function clone<T>(value: T): T {
 export class MemoryRuntimeStateStore implements RuntimeStateStore {
 	readonly #sessions = new Map<string, RuntimeSessionState>();
 
+	async readSession(
+		identity: RuntimeSessionIdentity,
+	): Promise<RuntimeSessionState> {
+		const key = `${identity.host}\0${identity.sessionId}`;
+		return clone(this.#sessions.get(key) ?? emptyRuntimeSessionState(identity));
+	}
+
 	async updateSession<T>(
 		identity: RuntimeSessionIdentity,
 		update: SessionStateUpdate<T>,
@@ -106,12 +112,6 @@ export class MemoryRuntimeStateStore implements RuntimeStateStore {
 		this.#sessions.set(key, clone(outcome.state));
 		return clone(outcome.result);
 	}
-}
-
-function errorCode(error: unknown): string | undefined {
-	return error && typeof error === "object" && "code" in error
-		? String(error.code)
-		: undefined;
 }
 
 function sessionFileName(identity: RuntimeSessionIdentity): string {
@@ -145,63 +145,32 @@ function assertStoredState(
 	return state as RuntimeSessionState;
 }
 
-function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-export interface JsonDirectoryRuntimeStateStoreOptions {
-	lockTimeoutMs?: number;
-	staleLockMs?: number;
-}
+export type JsonDirectoryRuntimeStateStoreOptions = LockedJsonDirectoryOptions;
 
 /**
  * Durable per-session JSON Adapter for one-shot and long-running processes.
  * A per-session lock plus atomic rename serializes concurrent compose/observe calls.
  */
 export class JsonDirectoryRuntimeStateStore implements RuntimeStateStore {
-	readonly #lockTimeoutMs: number;
-	readonly #staleLockMs: number;
+	readonly #documents: LockedJsonDirectory;
 
 	constructor(
 		readonly directory: string,
 		options: JsonDirectoryRuntimeStateStoreOptions = {},
 	) {
-		this.#lockTimeoutMs = Math.max(100, options.lockTimeoutMs ?? 2_000);
-		this.#staleLockMs = Math.max(
-			this.#lockTimeoutMs,
-			options.staleLockMs ?? 30_000,
-		);
+		this.#documents = new LockedJsonDirectory(directory, options);
 	}
 
-	async updateSession<T>(
-		identity: RuntimeSessionIdentity,
-		update: SessionStateUpdate<T>,
-	): Promise<T> {
-		await mkdir(this.directory, { recursive: true, mode: 0o700 });
-		const filePath = join(this.directory, sessionFileName(identity));
-		const lockPath = `${filePath}.lock`;
-		const lock = await this.#acquireLock(lockPath);
-		try {
-			const current = await this.#readState(filePath, identity);
-			const outcome = update(clone(current));
-			await this.#writeState(filePath, outcome.state);
-			return clone(outcome.result);
-		} finally {
-			await lock.close().catch(() => undefined);
-			await unlink(lockPath).catch(() => undefined);
-		}
-	}
-
-	async #readState(
-		filePath: string,
+	async readSession(
 		identity: RuntimeSessionIdentity,
 	): Promise<RuntimeSessionState> {
 		try {
-			const raw = await readFile(filePath, "utf8");
-			return assertStoredState(JSON.parse(raw), identity);
+			return await this.#documents.read(
+				sessionFileName(identity),
+				() => emptyRuntimeSessionState(identity),
+				(value) => assertStoredState(value, identity),
+			);
 		} catch (error) {
-			if (errorCode(error) === "ENOENT")
-				return emptyRuntimeSessionState(identity);
 			if (error instanceof RuntimeStateStoreError) throw error;
 			throw new RuntimeStateStoreError("failed to read runtime state", {
 				cause: error,
@@ -209,56 +178,25 @@ export class JsonDirectoryRuntimeStateStore implements RuntimeStateStore {
 		}
 	}
 
-	async #writeState(
-		filePath: string,
-		state: RuntimeSessionState,
-	): Promise<void> {
-		const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+	async updateSession<T>(
+		identity: RuntimeSessionIdentity,
+		update: SessionStateUpdate<T>,
+	): Promise<T> {
 		try {
-			await writeFile(temporaryPath, `${JSON.stringify(state)}\n`, {
-				encoding: "utf8",
-				flag: "wx",
-				mode: 0o600,
-			});
-			await rename(temporaryPath, filePath);
+			return await this.#documents.update(
+				sessionFileName(identity),
+				() => emptyRuntimeSessionState(identity),
+				(value) => assertStoredState(value, identity),
+				(current) => {
+					const outcome = update(clone(current));
+					return { value: outcome.state, result: outcome.result };
+				},
+			);
 		} catch (error) {
-			await unlink(temporaryPath).catch(() => undefined);
-			throw new RuntimeStateStoreError("failed to persist runtime state", {
+			if (error instanceof RuntimeStateStoreError) throw error;
+			throw new RuntimeStateStoreError("failed to update runtime state", {
 				cause: error,
 			});
-		}
-	}
-
-	async #acquireLock(lockPath: string) {
-		const startedAt = Date.now();
-		for (;;) {
-			try {
-				return await open(lockPath, "wx", 0o600);
-			} catch (error) {
-				if (errorCode(error) !== "EEXIST") {
-					throw new RuntimeStateStoreError(
-						"failed to acquire runtime state lock",
-						{
-							cause: error,
-						},
-					);
-				}
-				try {
-					const lockStat = await stat(lockPath);
-					if (Date.now() - lockStat.mtimeMs > this.#staleLockMs) {
-						await unlink(lockPath);
-						continue;
-					}
-				} catch (statError) {
-					if (errorCode(statError) === "ENOENT") continue;
-				}
-				if (Date.now() - startedAt >= this.#lockTimeoutMs) {
-					throw new RuntimeStateStoreError(
-						"timed out acquiring runtime state lock",
-					);
-				}
-				await delay(10);
-			}
 		}
 	}
 }

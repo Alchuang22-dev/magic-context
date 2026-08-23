@@ -47,6 +47,7 @@ class MagicContextEngine(ContextEngine):
         self.compression_count = 0
         self.session_id = "unbound"
         self.model_key: str | None = None
+        self.project_id: str | None = None
         self._last_usage: dict[str, Any] | None = None
         self._runtime_failures = 0
         self._fallback_count = 0
@@ -65,6 +66,7 @@ class MagicContextEngine(ContextEngine):
             context_length=self.context_length,
         )
         copied.threshold_tokens = self.threshold_tokens
+        copied.project_id = self.project_id
         memo[id(self)] = copied
         return copied
 
@@ -77,6 +79,15 @@ class MagicContextEngine(ContextEngine):
                 self.threshold_tokens = int(context_length * 0.82)
             model = kwargs.get("model")
             self.model_key = str(model) if model else None
+            project = next(
+                (
+                    kwargs.get(key)
+                    for key in ("project_id", "project_path", "cwd", "working_directory")
+                    if kwargs.get(key)
+                ),
+                None,
+            )
+            self.project_id = str(project) if project else None
 
     def on_session_reset(self) -> None:
         with self._lock:
@@ -143,6 +154,7 @@ class MagicContextEngine(ContextEngine):
             session_id=self.session_id,
             budget_tokens=budget,
             model_key=self.model_key,
+            project_id=self.project_id,
             usage=self._last_usage,
         )
         try:
@@ -182,11 +194,17 @@ class MagicContextEngine(ContextEngine):
             usage=copy.deepcopy(usage),
             context_limit_tokens=self.context_length,
             model_key=self.model_key,
+            project_id=self.project_id,
             turn_id=str(turn_id) if turn_id else None,
             task_id=str(kwargs["task_id"]) if kwargs.get("task_id") else None,
             interrupted=bool(kwargs.get("interrupted", False)),
             failed=bool(kwargs.get("failed", False)),
             exit_reason=kwargs.get("turn_exit_reason"),
+            memory_candidates=(
+                copy.deepcopy(kwargs["memory_candidates"])
+                if isinstance(kwargs.get("memory_candidates"), list)
+                else None
+            ),
         )
         with self._lock:
             self._observe_queue.append(payload)
@@ -235,6 +253,7 @@ class MagicContextEngine(ContextEngine):
         return {
             "engine": self.name,
             "session_id": self.session_id,
+            "project_id": self.project_id,
             "runtime_available": bool(getattr(self.runtime, "available", False)),
             "context_length": self.context_length,
             "threshold_tokens": self.threshold_tokens,

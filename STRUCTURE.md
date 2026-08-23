@@ -21,7 +21,7 @@ This repository is a monorepo containing TypeScript packages (under `packages/`)
 │   └── retina-local-fs/    # Local filesystem & Git predicate provider for smart-note condition checks
 ├── plugin/                 # Isolated, host-neutral agent-plugin migration
 │   ├── core-plugin/        # Context policy, protocol, and adapter contracts
-│   ├── runtime/            # Independent compose/observe process and state
+│   ├── runtime/            # Independent compose/observe, state, memory, and recall
 │   └── hermes-plugin/      # Hermes ContextEngine adapter for the core protocol
 ├── scripts/                # Local maintenance, release, and install scripts
 ├── docs/                   # Workspace design references for major subsystems
@@ -53,8 +53,10 @@ runtime is unavailable.
 Owns the two-method `context.compose` / `turn.observe` Interface. It applies
 core pressure, budget, and scheduling policy; preserves system messages and
 tool-complete recent turns; records observations idempotently; and persists
-per-session JSON state through an atomic state-store Adapter. Its NDJSON CLI
-works as either a one-shot command or a long-running stdio process.
+per-session JSON state through an atomic state-store Adapter. Its Memory Module
+persists project facts, performs exact deduplication and hybrid recall, and
+renders budgeted stable-prefix injections. Its NDJSON CLI works as either a
+one-shot command or a long-running stdio process.
 
 **`src/`:**
 - Purpose: Keep all runtime, tool, config, and integration code.

@@ -166,6 +166,7 @@ def compose_request(
     session_id: str,
     budget_tokens: int,
     model_key: str | None = None,
+    project_id: str | None = None,
     usage: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     canonical, index_by_id = snapshot_messages(messages)
@@ -191,6 +192,8 @@ def compose_request(
     }
     if model_key:
         request["modelKey"] = str(model_key)
+    if project_id:
+        request["projectId"] = str(project_id)
     normalized_usage = canonical_usage(usage, budget_tokens)
     if normalized_usage:
         request["usage"] = normalized_usage
@@ -206,11 +209,13 @@ def observe_request(
     usage: dict[str, Any] | None = None,
     context_limit_tokens: int = 0,
     model_key: str | None = None,
+    project_id: str | None = None,
     turn_id: str | None = None,
     task_id: str | None = None,
     interrupted: bool = False,
     failed: bool = False,
     exit_reason: str | None = None,
+    memory_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     canonical, _ = snapshot_messages(messages)
     request: dict[str, Any] = {
@@ -229,6 +234,7 @@ def observe_request(
         "turnId": turn_id,
         "taskId": task_id,
         "modelKey": model_key,
+        "projectId": project_id,
     }
     for key, value in optional_strings.items():
         if value:
@@ -238,6 +244,8 @@ def observe_request(
     normalized_usage = canonical_usage(usage, context_limit_tokens)
     if normalized_usage:
         request["usage"] = normalized_usage
+    if memory_candidates:
+        request["memoryCandidates"] = copy.deepcopy(memory_candidates)
     return request
 
 

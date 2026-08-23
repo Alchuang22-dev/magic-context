@@ -72,6 +72,13 @@ describe("runtime protocol", () => {
 			observedAtMs: 1_000,
 			messages: request.messages,
 			outcome: { interrupted: false, failed: false },
+			memoryCandidates: [
+				{
+					category: "PROJECT_RULES",
+					content: "Use apply_patch for hand-authored changes.",
+					importance: 80,
+				},
+			],
 		};
 		const calls: ContextRuntimeCall[] = [
 			{ method: "context.compose", params: request },

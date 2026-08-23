@@ -22,6 +22,7 @@ export interface RuntimePolicyConfig {
 	executeThresholdPercentage: number;
 	historyBudgetPercentage: number;
 	memoryBudgetTokens: number;
+	memoryBudgetPercentage: number;
 	cacheTtl: string;
 	maxObservedTurns: number;
 }
@@ -30,7 +31,8 @@ export const DEFAULT_RUNTIME_POLICY: Readonly<RuntimePolicyConfig> =
 	Object.freeze({
 		executeThresholdPercentage: 65,
 		historyBudgetPercentage: 0.15,
-		memoryBudgetTokens: 0,
+		memoryBudgetTokens: 8_000,
+		memoryBudgetPercentage: 0.1,
 		cacheTtl: "5m",
 		maxObservedTurns: 32,
 	});
@@ -286,6 +288,46 @@ export interface ComposeContextOutcome {
 	plan: ContextPlan;
 	drainLatchActiveSinceMs?: number;
 	deferredExecute?: { reason: string };
+	activeMemoryFingerprint?: string;
+	activeMemoryEpoch?: number;
+}
+
+export interface RuntimeMemoryInjection {
+	content: string;
+	epoch: number;
+	fingerprint: string;
+	estimatedTokens: number;
+}
+
+function configuredContextLimit(
+	request: ComposeContextRequest,
+	state: RuntimeSessionState,
+): number {
+	const observed = observedUsage(request, state);
+	return Math.floor(
+		finiteNonNegative(request.budgetTokens) ||
+			finiteNonNegative(observed.contextLimitTokens),
+	);
+}
+
+/** Maximum memory allocation for a compose call before recall is rendered. */
+export function deriveMemoryBudgetTokens(
+	request: ComposeContextRequest,
+	state: RuntimeSessionState,
+	config: RuntimePolicyConfig,
+): number {
+	const contextLimitTokens = configuredContextLimit(request, state);
+	if (contextLimitTokens === 0) return 0;
+	const percentageCap = Math.floor(
+		contextLimitTokens *
+			Math.max(0, Math.min(1, config.memoryBudgetPercentage)),
+	);
+	return partitionContextBudget({
+		contextLimitTokens,
+		executeThresholdPercentage: config.executeThresholdPercentage,
+		historyBudgetPercentage: config.historyBudgetPercentage,
+		memoryBudgetTokens: Math.min(config.memoryBudgetTokens, percentageCap),
+	}).memoryTokens;
 }
 
 export function composeContext(
@@ -293,12 +335,11 @@ export function composeContext(
 	state: RuntimeSessionState,
 	config: RuntimePolicyConfig,
 	nowMs: number,
+	memoryInjection?: RuntimeMemoryInjection,
 ): ComposeContextOutcome {
 	const forwardTokens = estimateCanonicalTokens(request.messages);
 	const observed = observedUsage(request, state);
-	const configuredLimit =
-		finiteNonNegative(request.budgetTokens) ||
-		finiteNonNegative(observed.contextLimitTokens);
+	const configuredLimit = configuredContextLimit(request, state);
 	if (configuredLimit === 0) {
 		const plan: ContextPlan = {
 			protocolVersion: 1,
@@ -361,13 +402,25 @@ export function composeContext(
 		contextLimitTokens: hardLimitTokens,
 		executeThresholdPercentage: schedule.threshold.percentage,
 		historyBudgetPercentage: config.historyBudgetPercentage,
-		memoryBudgetTokens: config.memoryBudgetTokens,
+		memoryBudgetTokens: memoryInjection
+			? Math.min(
+					config.memoryBudgetTokens,
+					Math.floor(
+						hardLimitTokens *
+							Math.max(0, Math.min(1, config.memoryBudgetPercentage)),
+					),
+				)
+			: 0,
 	});
 	const scheduledTarget = Math.max(
 		1,
 		partition.workingTokens + partition.historyTokens,
 	);
-	const deferredTarget = Math.max(1, Math.floor(hardLimitTokens * 0.9));
+	const injectionTokens = memoryInjection?.estimatedTokens ?? 0;
+	const deferredTarget = Math.max(
+		1,
+		Math.floor(hardLimitTokens * 0.9) - injectionTokens,
+	);
 	const targetTokens =
 		schedule.pass === "defer" ? deferredTarget : scheduledTarget;
 	const selected =
@@ -375,8 +428,11 @@ export function composeContext(
 			? [...request.messages]
 			: selectProtectedTail(request.messages, targetTokens);
 	const trimmed = trimSelectedMessages(selected, targetTokens);
-	const changed =
+	const transcriptChanged =
 		selected.length !== request.messages.length || trimmed.mutations.length > 0;
+	const memoryChanged =
+		memoryInjection?.fingerprint !== state.activeMemoryFingerprint;
+	const changed = transcriptChanged || memoryChanged;
 	const decision = !changed
 		? schedule.pass === "defer"
 			? "defer"
@@ -385,6 +441,18 @@ export function composeContext(
 			? "safe_fallback"
 			: "serve";
 	const firstTail = selected.find((message) => message.role !== "system");
+	const injections = memoryInjection
+		? [
+				{
+					slot: request.capabilities.systemSuffixInjection
+						? ("stable_prefix" as const)
+						: ("volatile_delta" as const),
+					content: memoryInjection.content,
+					epoch: memoryInjection.epoch,
+					fingerprint: memoryInjection.fingerprint,
+				},
+			]
+		: [];
 	const plan: ContextPlan = {
 		protocolVersion: 1,
 		requestId: request.requestId,
@@ -394,9 +462,9 @@ export function composeContext(
 			protectedTailStart: firstTail?.id,
 		},
 		mutations: trimmed.mutations,
-		injections: [],
+		injections,
 		accounting: {
-			estimatedInputTokens: trimmed.estimatedTokens,
+			estimatedInputTokens: trimmed.estimatedTokens + injectionTokens,
 			hardLimitTokens,
 			cacheDecision: changed ? "bust_required" : "hit_safe",
 		},
@@ -407,5 +475,7 @@ export function composeContext(
 		plan,
 		drainLatchActiveSinceMs: schedule.drainLatchActiveSinceMs,
 		deferredExecute: schedule.deferredExecute,
+		activeMemoryFingerprint: memoryInjection?.fingerprint,
+		activeMemoryEpoch: memoryInjection?.epoch,
 	};
 }

@@ -119,6 +119,35 @@ export interface TurnOutcomeObservation {
 	exitReason?: string;
 }
 
+/** The durable taxonomy accepted by the host-neutral Memory Module. */
+export const MEMORY_CATEGORIES = [
+	"PROJECT_RULES",
+	"ARCHITECTURE",
+	"CONSTRAINTS",
+	"CONFIG_VALUES",
+	"NAMING",
+] as const;
+
+export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
+export type MemoryScope = "project" | "ecosystem" | "universe";
+export type MemorySourceType = "historian" | "agent" | "dreamer" | "tool";
+
+/**
+ * A host-neutral fact candidate. Extraction may be performed by a host's
+ * historian model, but validation, deduplication, storage, and recall remain
+ * runtime-owned.
+ */
+export interface ObservedMemoryCandidate {
+	category: MemoryCategory;
+	content: string;
+	importance?: number;
+	scope?: MemoryScope;
+	shareable?: boolean;
+	sourceType?: MemorySourceType;
+	expiresAtMs?: number;
+	metadata?: Record<string, unknown>;
+}
+
 /** Host-neutral, idempotent record of one completed agent turn. */
 export interface ObserveTurnRequest {
 	protocolVersion: typeof CORE_PROTOCOL_VERSION;
@@ -133,6 +162,7 @@ export interface ObserveTurnRequest {
 	messages: CanonicalMessage[];
 	usage?: ContextUsageObservation;
 	outcome: TurnOutcomeObservation;
+	memoryCandidates?: ObservedMemoryCandidate[];
 }
 
 export interface TurnObservationReceipt {
