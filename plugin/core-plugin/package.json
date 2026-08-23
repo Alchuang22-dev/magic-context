@@ -1,0 +1,43 @@
+{
+  "name": "@cortexkit/magic-context-core-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Host-neutral context policy, protocol, and adapter contracts for Magic Context",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/context-policy.ts src/protocol.ts src/transcript.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "biome check src",
+    "lint:fix": "biome check --write src"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./context-policy": {
+      "types": "./dist/context-policy.d.ts",
+      "import": "./dist/context-policy.js"
+    },
+    "./transcript": {
+      "types": "./dist/transcript.d.ts",
+      "import": "./dist/transcript.js"
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
+    "@types/bun": "^1.3.10",
+    "typescript": "^5.8.0"
+  }
+}

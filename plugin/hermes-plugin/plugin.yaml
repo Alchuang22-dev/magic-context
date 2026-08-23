@@ -1,0 +1,4 @@
+name: magic-context
+version: "0.1.0"
+description: "Magic Context context selection and recall adapter for Hermes."
+author: "CortexKit contributors"

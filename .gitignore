@@ -20,6 +20,8 @@ build/
 coverage/
 .cache/
 tmp/
+__pycache__/
+*.py[cod]
 
 .sisyphus/
 .opencode/

@@ -19,6 +19,9 @@ This repository is a monorepo containing TypeScript packages (under `packages/`)
 │   ├── docs/               # Project documentation website
 │   ├── e2e-tests/          # End-to-end integration tests
 │   └── retina-local-fs/    # Local filesystem & Git predicate provider for smart-note condition checks
+├── plugin/                 # Isolated, host-neutral agent-plugin migration
+│   ├── core-plugin/        # Context policy, protocol, and adapter contracts
+│   └── hermes-plugin/      # Hermes ContextEngine adapter for the core protocol
 ├── scripts/                # Local maintenance, release, and install scripts
 ├── docs/                   # Workspace design references for major subsystems
 ├── Cargo.toml              # Rust workspace configuration
@@ -30,6 +33,20 @@ This repository is a monorepo containing TypeScript packages (under `packages/`)
 
 **TypeScript Plugin (`packages/plugin/`):**
 All paths below are relative to `packages/plugin/` — the published OpenCode npm package.
+
+**Core Plugin (`plugin/core-plugin/`):**
+Owns the host-neutral transcript contract, canonical context snapshot,
+capability negotiation, `ContextPlan` protocol, token-pressure math, context
+budget partitions, execute-threshold resolution, and scheduling state
+transitions. It must not import an agent SDK, provider SDK, transport, or host
+storage implementation. New host adapters depend on this package instead of
+importing OpenCode plugin sources.
+
+**Hermes Plugin (`plugin/hermes-plugin/`):**
+Registers the `magic-context` ContextEngine, maps Hermes OpenAI-format messages
+to the core protocol, materializes stable/volatile injection slots using
+Hermes-safe layout rules, and provides a bounded fallback when the external
+runtime is unavailable.
 
 **`src/`:**
 - Purpose: Keep all runtime, tool, config, and integration code.
@@ -130,6 +147,9 @@ Unless specified otherwise, TypeScript paths are relative to `packages/plugin/` 
 - `assets/magic-context.schema.json`: Generated JSON schema, kept in sync via `packages/plugin/scripts/build-schema.ts` and `scripts/release.sh`.
 
 **Core Logic:**
+- `plugin/core-plugin/src/context-policy.ts`: Host-neutral token pressure,
+  budget partitioning, execute-threshold resolution, pressure bands, TTL, and
+  composed scheduling state transitions exposed to isolated host adapters.
 - `src/plugin/messages-transform.ts`: Wrap the turn transform defensively against `SQLITE_BUSY` and preserve user-terminated tails (`preserveUserTerminatedTail`) when OpenCode concurrently appends pending assistant shells mid-transform.
 - `src/hooks/magic-context/transform.ts`: Run the turn transform; orchestrate tagging, replay paths, prepareCompartmentInjection, and downstream postprocess hand-off.
 - `src/hooks/magic-context/transform-postprocess-phase.ts`: Apply pending ops, heuristic cleanup, deferred-note nudges, **synthetic-todowrite injection (B7)**, and auto-search hints.
