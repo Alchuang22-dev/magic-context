@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
 
 import type {
+	CacheFeedbackRequest,
+	CanonicalMessage,
 	ContextPlan,
+	ContextToolExecutionResult,
 	ContextUsageObservation,
 	DeferredExecuteIntent,
 	ObserveTurnRequest,
+	SessionLifecycleAction,
+	ToolEventPhase,
 } from "@cortexkit/magic-context-core-plugin";
 
 import {
@@ -32,6 +37,53 @@ export interface RuntimeTurnRecord {
 	outcome: ObserveTurnRequest["outcome"];
 }
 
+export type RuntimeNoteStatus = "active" | "pending" | "ready" | "dismissed";
+
+export interface RuntimeNote {
+	id: number;
+	type: "session" | "smart";
+	content: string;
+	status: RuntimeNoteStatus;
+	surfaceCondition?: string;
+	readyReason?: string;
+	anchorOrdinal?: number;
+	createdAtMs: number;
+	updatedAtMs: number;
+	lastReadAtMs?: number;
+}
+
+export interface RuntimeAutomaticTrigger {
+	id: string;
+	kind: "large_tool_result" | "smart_note_ready" | "cache_pressure";
+	content: string;
+	createdAtMs: number;
+}
+
+export interface RuntimeToolEventRecord {
+	eventId: string;
+	phase: ToolEventPhase;
+	toolName: string;
+	observedAtMs: number;
+	status?: string;
+	durationMs?: number;
+	resultCharacters?: number;
+}
+
+export interface RuntimeLifecycleRecord {
+	eventId: string;
+	action: SessionLifecycleAction;
+	observedAtMs: number;
+	reason?: string;
+	targetSessionId?: string;
+}
+
+export interface RuntimeCacheFeedback {
+	latest?: CacheFeedbackRequest;
+	cumulativeCacheReadTokens: number;
+	cumulativeCacheWriteTokens: number;
+	recentEventIds: string[];
+}
+
 export interface RuntimeSessionState extends RuntimeSessionIdentity {
 	schemaVersion: typeof RUNTIME_STATE_SCHEMA_VERSION;
 	revision: number;
@@ -45,6 +97,17 @@ export interface RuntimeSessionState extends RuntimeSessionIdentity {
 	recentObservationIds: string[];
 	observations: RuntimeTurnRecord[];
 	latestObservation?: ObserveTurnRequest;
+	projectId?: string;
+	modelKey?: string;
+	nextNoteId: number;
+	notes: RuntimeNote[];
+	droppedMessageOrdinals: number[];
+	pendingTriggers: RuntimeAutomaticTrigger[];
+	toolEvents: RuntimeToolEventRecord[];
+	lifecycleEvents: RuntimeLifecycleRecord[];
+	lifecycleMessages?: CanonicalMessage[];
+	cacheFeedback: RuntimeCacheFeedback;
+	recentToolResults: ContextToolExecutionResult[];
 	lastCompose?: {
 		requestId: string;
 		plan: ContextPlan;
@@ -62,6 +125,7 @@ export interface RuntimeStateStore {
 		identity: RuntimeSessionIdentity,
 		update: SessionStateUpdate<T>,
 	): Promise<T>;
+	deleteSession(identity: RuntimeSessionIdentity): Promise<boolean>;
 }
 
 export class RuntimeStateStoreError extends Error {
@@ -82,6 +146,18 @@ export function emptyRuntimeSessionState(
 		lastResponseTimeMs: 0,
 		recentObservationIds: [],
 		observations: [],
+		nextNoteId: 1,
+		notes: [],
+		droppedMessageOrdinals: [],
+		pendingTriggers: [],
+		toolEvents: [],
+		lifecycleEvents: [],
+		cacheFeedback: {
+			cumulativeCacheReadTokens: 0,
+			cumulativeCacheWriteTokens: 0,
+			recentEventIds: [],
+		},
+		recentToolResults: [],
 	};
 }
 
@@ -111,6 +187,10 @@ export class MemoryRuntimeStateStore implements RuntimeStateStore {
 		const outcome = update(current);
 		this.#sessions.set(key, clone(outcome.state));
 		return clone(outcome.result);
+	}
+
+	async deleteSession(identity: RuntimeSessionIdentity): Promise<boolean> {
+		return this.#sessions.delete(`${identity.host}\0${identity.sessionId}`);
 	}
 }
 
@@ -142,7 +222,35 @@ function assertStoredState(
 			"stored runtime state is invalid or incompatible",
 		);
 	}
-	return state as RuntimeSessionState;
+	return {
+		...emptyRuntimeSessionState(identity),
+		...state,
+		nextNoteId: Number.isInteger(state.nextNoteId)
+			? Number(state.nextNoteId)
+			: 1,
+		notes: Array.isArray(state.notes) ? state.notes : [],
+		droppedMessageOrdinals: Array.isArray(state.droppedMessageOrdinals)
+			? state.droppedMessageOrdinals
+			: [],
+		pendingTriggers: Array.isArray(state.pendingTriggers)
+			? state.pendingTriggers
+			: [],
+		toolEvents: Array.isArray(state.toolEvents) ? state.toolEvents : [],
+		lifecycleEvents: Array.isArray(state.lifecycleEvents)
+			? state.lifecycleEvents
+			: [],
+		cacheFeedback:
+			state.cacheFeedback && typeof state.cacheFeedback === "object"
+				? state.cacheFeedback
+				: {
+						cumulativeCacheReadTokens: 0,
+						cumulativeCacheWriteTokens: 0,
+						recentEventIds: [],
+					},
+		recentToolResults: Array.isArray(state.recentToolResults)
+			? state.recentToolResults
+			: [],
+	} as RuntimeSessionState;
 }
 
 export type JsonDirectoryRuntimeStateStoreOptions = LockedJsonDirectoryOptions;
@@ -195,6 +303,17 @@ export class JsonDirectoryRuntimeStateStore implements RuntimeStateStore {
 		} catch (error) {
 			if (error instanceof RuntimeStateStoreError) throw error;
 			throw new RuntimeStateStoreError("failed to update runtime state", {
+				cause: error,
+			});
+		}
+	}
+
+	async deleteSession(identity: RuntimeSessionIdentity): Promise<boolean> {
+		try {
+			return await this.#documents.delete(sessionFileName(identity));
+		} catch (error) {
+			if (error instanceof RuntimeStateStoreError) throw error;
+			throw new RuntimeStateStoreError("failed to delete runtime state", {
 				cause: error,
 			});
 		}

@@ -66,12 +66,16 @@ class MagicContextEngineTests(unittest.TestCase):
                 self.llm = object()
                 self.tasks = []
                 self.engine = None
+                self.hooks = {}
 
             def register_auxiliary_task(self, **kwargs):
                 self.tasks.append(kwargs)
 
             def register_context_engine(self, engine):
                 self.engine = engine
+
+            def register_hook(self, name, callback):
+                self.hooks[name] = callback
 
         context = FakeContext()
         module.register(context)
@@ -84,6 +88,10 @@ class MagicContextEngineTests(unittest.TestCase):
             ],
         )
         self.assertIsInstance(context.engine, MagicContextEngine)
+        self.assertEqual(
+            set(context.hooks),
+            {"pre_tool_call", "post_tool_call", "on_session_reset", "on_session_finalize"},
+        )
 
     def test_engine_implements_the_real_hermes_context_contract(self):
         from agent.context_engine import ContextEngine
@@ -199,10 +207,114 @@ class MagicContextEngineTests(unittest.TestCase):
         self.assertEqual(result["engine"], "magic-context")
         self.assertFalse(result["runtime_available"])
 
+    def test_registers_the_complete_context_tool_surface(self):
+        engine = MagicContextEngine()
+        self.assertEqual(
+            [schema["name"] for schema in engine.get_tool_schemas()],
+            [
+                "ctx_status",
+                "ctx_search",
+                "ctx_memory",
+                "ctx_expand",
+                "ctx_reduce",
+                "ctx_note",
+            ],
+        )
+
+    def test_materializes_block_level_text_and_tool_result_mutations(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "id": "first", "text": "replace me"},
+                    {"type": "text", "id": "second", "text": "keep me"},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "huge result"},
+        ]
+        request, indexes = adapter.compose_request(
+            messages,
+            request_id="blocks",
+            session_id="session",
+            budget_tokens=1000,
+        )
+        first_message = request["messages"][0]
+        tool_message = request["messages"][1]
+        plan = {
+            "protocolVersion": 1,
+            "requestId": "blocks",
+            "decision": "serve",
+            "retain": {"messageIds": [first_message["id"], tool_message["id"]]},
+            "mutations": [
+                {
+                    "target": {
+                        "messageId": first_message["id"],
+                        "blockId": first_message["content"][0]["id"],
+                    },
+                    "operation": "replace",
+                    "content": "bounded text",
+                },
+                {
+                    "target": {
+                        "messageId": tool_message["id"],
+                        "blockId": tool_message["content"][0]["id"],
+                    },
+                    "operation": "truncate_tool",
+                    "content": "bounded result",
+                },
+            ],
+            "injections": [],
+            "accounting": {
+                "estimatedInputTokens": 20,
+                "hardLimitTokens": 1000,
+                "cacheDecision": "bust_required",
+            },
+        }
+
+        selected = adapter.materialize_plan(messages, request, indexes, plan)
+        self.assertEqual(selected[0]["content"][0]["text"], "bounded text")
+        self.assertEqual(selected[0]["content"][1]["text"], "keep me")
+        self.assertEqual(selected[1]["content"], "bounded result")
+        self.assertEqual(messages[0]["content"][0]["text"], "replace me")
+
+    def test_context_tools_are_forwarded_to_the_runtime(self):
+        def responder(method, request):
+            self.assertEqual(method, "tool.execute")
+            self.assertEqual(request["toolName"], "ctx_search")
+            self.assertEqual(request["arguments"], {"query": "lunar"})
+            self.assertEqual(request["messages"][0]["ordinal"], 1)
+            return {
+                "protocolVersion": 1,
+                "requestId": request["requestId"],
+                "sessionId": request["sessionId"],
+                "toolName": "ctx_search",
+                "ok": True,
+                "output": "one result",
+                "revision": 1,
+            }
+
+        engine = MagicContextEngine(runtime=FakeRuntime(responder))
+        engine.session_id = "session-tools"
+        result = engine.handle_tool_call(
+            "ctx_search",
+            {"query": "lunar"},
+            messages=[{"role": "user", "content": "find lunar"}],
+        )
+        self.assertEqual(result, "one result")
+
     def test_turn_observe_sends_a_canonical_idempotent_observation(self):
         observed = threading.Event()
 
         def responder(method, request):
+            if method == "session.lifecycle":
+                return {
+                    "protocolVersion": 1,
+                    "eventId": request["eventId"],
+                    "sessionId": request["sessionId"],
+                    "action": request["action"],
+                    "accepted": True,
+                    "revision": 1,
+                }
             self.assertEqual(method, "turn.observe")
             self.assertEqual(request["observationId"], "turn-7")
             self.assertEqual(request["sessionId"], "session-7")
@@ -251,6 +363,15 @@ class MagicContextEngineTests(unittest.TestCase):
         second_finished = threading.Event()
 
         def responder(method, request):
+            if method == "session.lifecycle":
+                return {
+                    "protocolVersion": 1,
+                    "eventId": request["eventId"],
+                    "sessionId": request["sessionId"],
+                    "action": request["action"],
+                    "accepted": True,
+                    "revision": 1,
+                }
             self.assertEqual(method, "turn.observe")
             if request["observationId"] == "turn-1":
                 first_started.set()
@@ -287,6 +408,30 @@ class MagicContextEngineTests(unittest.TestCase):
             [request["observationId"] for method, request in runtime.calls if method == "turn.observe"],
             ["turn-1", "turn-2"],
         )
+
+    def test_cache_and_tool_events_feed_the_runtime(self):
+        runtime = FakeRuntime(lambda method, request: {"accepted": True})
+        engine = MagicContextEngine(runtime=runtime, context_length=1000)
+        engine.session_id = "session-events"
+        engine.update_from_response(
+            {
+                "input_tokens": 700,
+                "cache_read_tokens": 100,
+                "cache_write_tokens": 50,
+            }
+        )
+        engine.observe_tool_event(
+            "post",
+            session_id="session-events",
+            tool_name="read_file",
+            tool_call_id="call-1",
+            result="x" * 9000,
+            status="ok",
+        )
+
+        self.assertEqual([method for method, _ in runtime.calls], ["cache.observe", "tool.observe"])
+        self.assertEqual(runtime.calls[0][1]["usage"]["cacheReadTokens"], 100)
+        self.assertEqual(runtime.calls[1][1]["phase"], "post")
 
     @unittest.skipUnless(shutil.which("node") and RUNTIME_CLI.exists(), "built runtime required")
     def test_real_runtime_command_round_trips_compose_and_observe(self):

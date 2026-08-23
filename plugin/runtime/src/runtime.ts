@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +14,9 @@ import {
 	DEFAULT_RUNTIME_POLICY,
 	deriveMemoryBudgetTokens,
 	type RuntimePolicyConfig,
+	type RuntimeTriggerInjection,
 } from "./compose";
+import { RuntimeControlPlane } from "./control-plane";
 import { memoryProjectKey, RuntimeMemory } from "./memory";
 import {
 	JsonDirectoryRuntimeMemoryStore,
@@ -26,8 +29,12 @@ import {
 } from "./state-store";
 import {
 	InvalidRuntimeRequestError,
+	validateCacheFeedbackRequest,
 	validateComposeRequest,
 	validateObserveRequest,
+	validateSessionLifecycleRequest,
+	validateToolEventRequest,
+	validateToolExecuteRequest,
 } from "./validation";
 
 export interface RuntimeCallEnvelope {
@@ -102,6 +109,7 @@ export class MagicContextRuntime {
 	readonly #policy: RuntimePolicyConfig;
 	readonly #now: () => number;
 	readonly #memory: RuntimeMemory;
+	readonly #control: RuntimeControlPlane;
 
 	constructor(options: MagicContextRuntimeOptions) {
 		this.#store = options.store;
@@ -109,6 +117,11 @@ export class MagicContextRuntime {
 			options.memory ?? new RuntimeMemory(new MemoryRuntimeMemoryStore());
 		this.#policy = normalizedPolicy(options.policy);
 		this.#now = options.now ?? Date.now;
+		this.#control = new RuntimeControlPlane(
+			this.#store,
+			this.#memory,
+			this.#now,
+		);
 	}
 
 	async handle(call: RuntimeCallEnvelope): Promise<ContextRuntimeResult> {
@@ -120,6 +133,20 @@ export class MagicContextRuntime {
 				return this.#compose(call.params);
 			case "turn.observe":
 				return this.#observe(call.params);
+			case "tool.execute":
+				return this.#control.executeTool(
+					validateToolExecuteRequest(call.params),
+				);
+			case "session.lifecycle":
+				return this.#control.lifecycle(
+					validateSessionLifecycleRequest(call.params),
+				);
+			case "cache.observe":
+				return this.#control.observeCache(
+					validateCacheFeedbackRequest(call.params),
+				);
+			case "tool.observe":
+				return this.#control.observeTool(validateToolEventRequest(call.params));
 			default:
 				throw new UnknownRuntimeMethodError(String(call.method));
 		}
@@ -149,13 +176,16 @@ export class MagicContextRuntime {
 				return { state, result: state.lastCompose.plan };
 			}
 			const nowMs = this.#now();
+			const triggerInjection = renderTriggerInjection(state);
 			const composed = composeContext(
 				request,
 				state,
 				this.#policy,
 				nowMs,
 				memoryInjection,
+				triggerInjection,
 			);
+			const consumedTriggers = new Set(triggerInjection?.triggerIds ?? []);
 			const next = {
 				...state,
 				revision: state.revision + 1,
@@ -164,6 +194,9 @@ export class MagicContextRuntime {
 				deferredExecute: composed.deferredExecute,
 				activeMemoryFingerprint: composed.activeMemoryFingerprint,
 				activeMemoryEpoch: composed.activeMemoryEpoch,
+				pendingTriggers: state.pendingTriggers.filter(
+					(trigger) => !consumedTriggers.has(trigger.id),
+				),
 				lastCompose: {
 					requestId: request.requestId,
 					plan: composed.plan,
@@ -224,6 +257,8 @@ export class MagicContextRuntime {
 					recentObservationIds,
 					observations,
 					latestObservation: isLatest ? observation : state.latestObservation,
+					projectId: observation.projectId ?? state.projectId,
+					modelKey: observation.modelKey ?? state.modelKey,
 					lastCompose: undefined,
 				},
 				result: this.#receipt(observation, true, revision),
@@ -319,6 +354,26 @@ function visibleMemoryIds(
 		}
 	}
 	return [...ids];
+}
+
+function renderTriggerInjection(
+	state: import("./state-store").RuntimeSessionState,
+): RuntimeTriggerInjection | undefined {
+	if (state.pendingTriggers.length === 0) return undefined;
+	const triggers = state.pendingTriggers.slice(0, 4);
+	const content = `<magic-context-triggers>\n${triggers
+		.map((trigger) => `- ${trigger.content}`)
+		.join("\n")}\n</magic-context-triggers>`;
+	return {
+		content,
+		epoch: state.revision,
+		fingerprint: createHash("sha256").update(content).digest("hex"),
+		estimatedTokens: Math.max(
+			1,
+			Math.ceil(Buffer.byteLength(content, "utf8") / 3),
+		),
+		triggerIds: triggers.map((trigger) => trigger.id),
+	};
 }
 
 export function defaultRuntimeStateDirectory(

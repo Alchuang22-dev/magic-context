@@ -6,6 +6,7 @@ from collections import deque
 import copy
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -14,11 +15,15 @@ from typing import Any
 from agent.context_engine import ContextEngine
 
 from .hermes_adapter import (
+    cache_feedback_request,
     compose_request,
     estimate_tokens,
+    lifecycle_request,
     materialize_plan,
     observe_request,
     safe_fallback,
+    tool_event_request,
+    tool_execute_request,
 )
 from .runtime_bridge import RuntimeBridge, RuntimeBridgeError
 
@@ -51,6 +56,8 @@ class MagicContextEngine(ContextEngine):
         self._last_usage: dict[str, Any] | None = None
         self._runtime_failures = 0
         self._fallback_count = 0
+        self._cache_read_tokens = 0
+        self._cache_write_tokens = 0
         self._lock = threading.RLock()
         self._observe_queue: deque[dict[str, Any]] = deque()
         self._observe_worker_active = False
@@ -87,7 +94,13 @@ class MagicContextEngine(ContextEngine):
                 ),
                 None,
             )
-            self.project_id = str(project) if project else None
+            self.project_id = str(project) if project else os.getcwd()
+        self._send_lifecycle("start", self.session_id)
+
+    def on_session_end(
+        self, session_id: str, messages: list[dict[str, Any]]
+    ) -> None:
+        self._send_lifecycle("end", session_id or self.session_id, messages=messages)
 
     def on_session_reset(self) -> None:
         with self._lock:
@@ -97,6 +110,24 @@ class MagicContextEngine(ContextEngine):
             self._last_usage = None
             self._runtime_failures = 0
             self._fallback_count = 0
+            self._cache_read_tokens = 0
+            self._cache_write_tokens = 0
+
+    def carry_over_new_session_context(
+        self, old_session_id: str, new_session_id: str
+    ) -> None:
+        self._send_lifecycle(
+            "clone",
+            old_session_id,
+            target_session_id=new_session_id,
+            reason="host_carry_over",
+        )
+
+    def on_session_delete(self, session_id: str, *, reason: str = "host_delete") -> None:
+        self._send_lifecycle("delete", session_id, reason=reason)
+
+    def observe_session_reset(self, session_id: str, *, reason: str = "host_reset") -> None:
+        self._send_lifecycle("reset", session_id, reason=reason)
 
     def update_from_response(self, usage: dict[str, Any]) -> None:
         with self._lock:
@@ -114,6 +145,29 @@ class MagicContextEngine(ContextEngine):
                 or 0
             )
             self._last_usage = copy.deepcopy(usage)
+            self._cache_read_tokens += int(usage.get("cache_read_tokens", 0) or 0)
+            self._cache_write_tokens += int(usage.get("cache_write_tokens", 0) or 0)
+            session_id = self.session_id
+            model_key = self.model_key
+            project_id = self.project_id
+            context_length = self.context_length
+        if session_id == "unbound" or not getattr(self.runtime, "available", False):
+            return
+        payload = cache_feedback_request(
+            event_id=uuid.uuid4().hex,
+            session_id=session_id,
+            observed_at_ms=int(time.time() * 1000),
+            usage=copy.deepcopy(usage),
+            context_limit_tokens=context_length,
+            model_key=model_key,
+            project_id=project_id,
+        )
+        try:
+            self.runtime.call("cache.observe", payload)
+        except Exception as exc:
+            with self._lock:
+                self._runtime_failures += 1
+            logger.warning("magic-context cache observation failed: %s", exc)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         # Per-request selection owns the provider window. Host compaction must
@@ -240,14 +294,196 @@ class MagicContextEngine(ContextEngine):
                 "name": "ctx_status",
                 "description": "Inspect the active Magic Context runtime and context budget state.",
                 "parameters": {"type": "object", "properties": {}, "required": []},
-            }
+            },
+            {
+                "name": "ctx_search",
+                "description": "Search durable memories, notes, and stored raw session messages. Message hits include ordinals that can be expanded.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "number"},
+                        "sources": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["memory", "message", "git_commit", "primer", "note"],
+                            },
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "ctx_memory",
+                "description": "Write, update, archive, merge, get, or list durable project memories.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["write", "update", "archive", "merge", "get", "list"],
+                        },
+                        "content": {"type": "string"},
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "PROJECT_RULES",
+                                "ARCHITECTURE",
+                                "CONSTRAINTS",
+                                "CONFIG_VALUES",
+                                "NAMING",
+                            ],
+                        },
+                        "ids": {"type": "array", "items": {"type": "number"}},
+                        "limit": {"type": "number"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            },
+            {
+                "name": "ctx_expand",
+                "description": "Recover a full stored message by ordinal, or render a stored ordinal range. Reduced content remains recoverable.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "start": {"type": "number"},
+                        "end": {"type": "number"},
+                        "verbose": {"type": "boolean"},
+                        "message": {"type": "number"},
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "ctx_reduce",
+                "description": "Persistently remove stale message ordinals from future provider context while preserving raw history for ctx_expand. Ranges such as '3-5,8' are accepted.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"drop": {"type": "string"}},
+                    "required": ["drop"],
+                },
+            },
+            {
+                "name": "ctx_note",
+                "description": "Write, read, update, or dismiss session notes. A surface_condition of tool:<name> auto-triggers after that tool succeeds.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["write", "read", "dismiss", "update"],
+                        },
+                        "content": {"type": "string"},
+                        "surface_condition": {"type": "string"},
+                        "filter": {
+                            "type": "string",
+                            "enum": ["all", "active", "pending", "ready", "dismissed"],
+                        },
+                        "limit": {"type": "number"},
+                        "offset": {"type": "number"},
+                        "note_id": {"type": "number"},
+                    },
+                    "required": [],
+                },
+            },
         ]
 
     def handle_tool_call(self, name: str, args: dict[str, Any], **kwargs: Any) -> str:
-        del args, kwargs
-        if name != "ctx_status":
+        if name == "ctx_status":
+            return json.dumps(self.get_status(), ensure_ascii=False)
+        if name not in {"ctx_search", "ctx_memory", "ctx_expand", "ctx_reduce", "ctx_note"}:
             return json.dumps({"error": f"Unknown Magic Context tool: {name}"})
-        return json.dumps(self.get_status(), ensure_ascii=False)
+        if not getattr(self.runtime, "available", False):
+            return "Error: Magic Context runtime is not configured."
+        messages = kwargs.get("messages")
+        payload = tool_execute_request(
+            messages if isinstance(messages, list) else [],
+            request_id=str(
+                kwargs.get("tool_call_id")
+                or kwargs.get("call_id")
+                or uuid.uuid4().hex
+            ),
+            session_id=self.session_id,
+            tool_name=name,
+            arguments=args if isinstance(args, dict) else {},
+            invoked_at_ms=int(time.time() * 1000),
+            model_key=self.model_key,
+            project_id=self.project_id,
+        )
+        try:
+            result = self.runtime.call("tool.execute", payload)
+            if not isinstance(result, dict) or not isinstance(result.get("output"), str):
+                raise RuntimeBridgeError("tool.execute returned an invalid result")
+            return result["output"]
+        except Exception as exc:
+            with self._lock:
+                self._runtime_failures += 1
+            logger.warning("magic-context tool %s failed: %s", name, exc)
+            return f"Error: Magic Context runtime failed while executing {name}."
+
+    def observe_tool_event(self, phase: str, **event: Any) -> None:
+        session_id = str(event.get("session_id") or self.session_id or "unbound")
+        if session_id == "unbound" or not getattr(self.runtime, "available", False):
+            return
+        tool_name = str(event.get("tool_name") or "unknown")
+        tool_call_id = str(event.get("tool_call_id") or "")
+        turn_id = str(event.get("turn_id") or "")
+        event_seed = ":".join(
+            value for value in (session_id, turn_id, tool_call_id, tool_name, phase) if value
+        )
+        payload = tool_event_request(
+            event_id=event_seed if (tool_call_id or turn_id) else uuid.uuid4().hex,
+            session_id=session_id,
+            observed_at_ms=int(time.time() * 1000),
+            phase=phase,
+            tool_name=tool_name,
+            arguments=event.get("args") if isinstance(event.get("args"), dict) else None,
+            result=event.get("result") if phase == "post" else None,
+            status=str(event["status"]) if event.get("status") else None,
+            duration_ms=event.get("duration_ms"),
+            tool_call_id=tool_call_id or None,
+            turn_id=turn_id or None,
+            task_id=str(event.get("task_id") or "") or None,
+        )
+        try:
+            self.runtime.call("tool.observe", payload)
+        except Exception as exc:
+            with self._lock:
+                self._runtime_failures += 1
+            logger.warning("magic-context tool event observation failed: %s", exc)
+
+    def _send_lifecycle(
+        self,
+        action: str,
+        session_id: str,
+        *,
+        messages: list[dict[str, Any]] | None = None,
+        target_session_id: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if not session_id or session_id == "unbound" or not getattr(
+            self.runtime, "available", False
+        ):
+            return
+        payload = lifecycle_request(
+            event_id=uuid.uuid4().hex,
+            session_id=session_id,
+            action=action,
+            observed_at_ms=int(time.time() * 1000),
+            messages=messages,
+            target_session_id=target_session_id,
+            model_key=self.model_key,
+            project_id=self.project_id,
+            reason=reason,
+        )
+        try:
+            self.runtime.call("session.lifecycle", payload)
+        except Exception as exc:
+            with self._lock:
+                self._runtime_failures += 1
+            logger.warning("magic-context session lifecycle %s failed: %s", action, exc)
 
     def get_status(self) -> dict[str, Any]:
         return {
@@ -263,4 +499,6 @@ class MagicContextEngine(ContextEngine):
             "estimated_last_prompt_tokens": self.last_prompt_tokens,
             "runtime_failures": self._runtime_failures,
             "safe_fallback_count": self._fallback_count,
+            "cache_read_tokens": self._cache_read_tokens,
+            "cache_write_tokens": self._cache_write_tokens,
         }

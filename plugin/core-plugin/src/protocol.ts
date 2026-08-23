@@ -174,11 +174,134 @@ export interface TurnObservationReceipt {
 	observedAtMs: number;
 }
 
+export const CONTEXT_TOOL_NAMES = [
+	"ctx_search",
+	"ctx_memory",
+	"ctx_expand",
+	"ctx_reduce",
+	"ctx_note",
+] as const;
+
+export type ContextToolName = (typeof CONTEXT_TOOL_NAMES)[number];
+
+export interface ExecuteContextToolRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	requestId: string;
+	host: string;
+	sessionId: string;
+	projectId?: string;
+	modelKey?: string;
+	toolName: ContextToolName;
+	arguments: Record<string, unknown>;
+	messages?: CanonicalMessage[];
+	invokedAtMs: number;
+}
+
+export interface ContextToolExecutionResult {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	requestId: string;
+	sessionId: string;
+	toolName: ContextToolName;
+	ok: boolean;
+	output: string;
+	revision: number;
+}
+
+export type SessionLifecycleAction =
+	| "start"
+	| "end"
+	| "clone"
+	| "reset"
+	| "delete";
+
+export interface SessionLifecycleRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	eventId: string;
+	host: string;
+	sessionId: string;
+	action: SessionLifecycleAction;
+	observedAtMs: number;
+	targetSessionId?: string;
+	projectId?: string;
+	modelKey?: string;
+	reason?: string;
+	messages?: CanonicalMessage[];
+}
+
+export interface SessionLifecycleReceipt {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	eventId: string;
+	sessionId: string;
+	action: SessionLifecycleAction;
+	accepted: boolean;
+	revision: number;
+	targetSessionId?: string;
+}
+
+export interface CacheFeedbackRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	eventId: string;
+	host: string;
+	sessionId: string;
+	observedAtMs: number;
+	usage: ContextUsageObservation;
+	projectId?: string;
+	modelKey?: string;
+}
+
+export interface CacheFeedbackReceipt {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	eventId: string;
+	sessionId: string;
+	accepted: boolean;
+	revision: number;
+	cumulativeCacheReadTokens: number;
+	cumulativeCacheWriteTokens: number;
+}
+
+export type ToolEventPhase = "pre" | "post";
+
+export interface ToolEventRequest {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	eventId: string;
+	host: string;
+	sessionId: string;
+	observedAtMs: number;
+	phase: ToolEventPhase;
+	toolName: string;
+	arguments?: Record<string, unknown>;
+	result?: unknown;
+	status?: string;
+	durationMs?: number;
+	toolCallId?: string;
+	turnId?: string;
+	taskId?: string;
+}
+
+export interface ToolEventReceipt {
+	protocolVersion: typeof CORE_PROTOCOL_VERSION;
+	eventId: string;
+	sessionId: string;
+	accepted: boolean;
+	revision: number;
+	triggersQueued: number;
+}
+
 export type ContextRuntimeCall =
 	| { method: "context.compose"; params: ComposeContextRequest }
-	| { method: "turn.observe"; params: ObserveTurnRequest };
+	| { method: "turn.observe"; params: ObserveTurnRequest }
+	| { method: "tool.execute"; params: ExecuteContextToolRequest }
+	| { method: "session.lifecycle"; params: SessionLifecycleRequest }
+	| { method: "cache.observe"; params: CacheFeedbackRequest }
+	| { method: "tool.observe"; params: ToolEventRequest };
 
-export type ContextRuntimeResult = ContextPlan | TurnObservationReceipt;
+export type ContextRuntimeResult =
+	| ContextPlan
+	| TurnObservationReceipt
+	| ContextToolExecutionResult
+	| SessionLifecycleReceipt
+	| CacheFeedbackReceipt
+	| ToolEventReceipt;
 
 export interface ContextMutation {
 	target: { messageId: string; blockId?: string };
@@ -249,6 +372,16 @@ export function validateContextPlan(
 		);
 	}
 	const knownMessages = new Set(request.messages.map((message) => message.id));
+	const knownBlocks = new Map(
+		request.messages.map((message) => [
+			message.id,
+			new Set(
+				message.content.flatMap((block) =>
+					block.id === undefined ? [] : [block.id],
+				),
+			),
+		]),
+	);
 	const retained = new Set<string>();
 	for (const messageId of plan.retain.messageIds) {
 		if (!knownMessages.has(messageId)) {
@@ -268,6 +401,22 @@ export function validateContextPlan(
 			throw new InvalidContextPlanError(
 				`mutation references unknown message ${mutation.target.messageId}`,
 			);
+		}
+		if (mutation.target.blockId !== undefined) {
+			if (!request.capabilities.stablePartIds) {
+				throw new InvalidContextPlanError(
+					"host cannot materialize block-level mutations",
+				);
+			}
+			if (
+				!knownBlocks
+					.get(mutation.target.messageId)
+					?.has(mutation.target.blockId)
+			) {
+				throw new InvalidContextPlanError(
+					`mutation references unknown block ${mutation.target.blockId}`,
+				);
+			}
 		}
 		if (mutation.operation === "replace" && mutation.content === undefined) {
 			throw new InvalidContextPlanError("replace mutation requires content");

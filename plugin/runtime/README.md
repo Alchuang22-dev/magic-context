@@ -1,7 +1,7 @@
 # Magic Context Runtime
 
 This package is the host-neutral runtime behind the agent-plugin protocol. Its
-entire external Interface is two methods:
+external Interface has a data plane and a control plane:
 
 - `context.compose` accepts a canonical transcript and returns a validated
   `ContextPlan` after token-pressure, budget-partition, scheduling, protected
@@ -9,6 +9,11 @@ entire external Interface is two methods:
 - `turn.observe` records a canonical completed turn idempotently and returns a
   revisioned receipt. Observed usage feeds the next compose decision and
   optional `memoryCandidates` are persisted idempotently.
+- `tool.execute` implements `ctx_search`, `ctx_memory`, `ctx_expand`,
+  `ctx_reduce`, and `ctx_note` without importing a host SDK.
+- `session.lifecycle` owns start/end/clone/reset/delete state transitions.
+- `cache.observe` records cache-read/cache-write feedback, while
+  `tool.observe` records pre/post tool events and schedules automatic nudges.
 
 The runtime never imports an agent SDK or an existing OpenCode/Pi
 implementation. Session and project-memory stores each expose a narrow
@@ -35,6 +40,21 @@ Embedded runtimes can supply another `EmbeddingAdapter` without changing the
 Memory Module or host Adapter. Project memory is keyed by `projectId`; when a
 host cannot provide one, the runtime deliberately falls back to a session-local
 key to prevent cross-project leakage.
+
+## Context tools and triggers
+
+- `ctx_search` performs hybrid memory recall plus lexical message/note search.
+- `ctx_memory` writes, updates, archives, merges, gets, and lists project
+  memories.
+- `ctx_expand` reads the retained raw transcript even after `ctx_reduce` removes
+  ordinals from provider context.
+- `ctx_note` stores session notes and supports `tool:<name>` surface conditions.
+- Large successful tool results, ready smart notes, and cache pressure at or
+  above 85% enqueue one-shot `tail_nudge` injections for the next compose.
+
+All control-plane requests carry caller-provided idempotency IDs. Durable JSON
+state includes recent receipts and event IDs so retrying a one-shot Adapter
+does not duplicate mutations or feedback.
 
 ## Command
 

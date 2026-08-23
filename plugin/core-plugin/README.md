@@ -18,6 +18,11 @@ long-running runtime transports to share the same state semantics. A host or
 historian may attach validated `memoryCandidates`; storage and recall remain
 runtime-owned.
 
+The same protocol declares host-neutral control-plane calls for context tools,
+session lifecycle, cache feedback, and tool events. `ContextPlan` validation
+permits block targets only when an Adapter advertises `stablePartIds` and the
+referenced block exists in the canonical request.
+
 ## Context policy
 
 `@cortexkit/magic-context-core-plugin/context-policy` owns the deterministic
@@ -39,8 +44,8 @@ existing OpenCode and Pi packages; future host adapters consume its public
 Interface without editing or importing those implementations.
 
 This is still an incremental extraction. The independent runtime now provides
-a conservative host-neutral protected-tail and bounded-reduction path plus
-durable memory and recall. Full production protected-tail parity, m[0]/m[1]
-history composition, historian extraction, workspace visibility, promotion,
-and dreamer execution remain in their current packages until those algorithms
-move behind this Interface.
+a conservative host-neutral protected-tail and bounded-reduction path, durable
+memory and recall, context tools, lifecycle state, cache/tool feedback, and
+automatic triggers. Full production m[0]/m[1] history composition, historian
+extraction, workspace visibility, promotion, and dreamer execution remain in
+their current packages until those algorithms move behind this Interface.

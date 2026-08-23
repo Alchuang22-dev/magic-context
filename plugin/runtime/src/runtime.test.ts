@@ -224,6 +224,7 @@ describe("context.compose", () => {
 				role: "tool",
 				content: [
 					{
+						id: "result:block",
 						kind: "tool_result",
 						callId: "call-1",
 						output: "payload".repeat(2_000),
@@ -234,13 +235,19 @@ describe("context.compose", () => {
 
 		const plan = await runtime.handle({
 			method: "context.compose",
-			params: composeRequest(messages),
+			params: composeRequest(messages, {
+				capabilities: resolveCapabilities({
+					usageObservation: true,
+					stablePartIds: true,
+				}),
+			}),
 		});
 
 		if (!("mutations" in plan)) throw new Error("expected ContextPlan");
 		expect(plan.mutations).toHaveLength(1);
 		expect(plan.mutations[0].operation).toBe("truncate_tool");
 		expect(plan.mutations[0].target.messageId).toBe("result");
+		expect(plan.mutations[0].target.blockId).toBe("result:block");
 		expect(plan.accounting.estimatedInputTokens).toBeLessThanOrEqual(650);
 	});
 });

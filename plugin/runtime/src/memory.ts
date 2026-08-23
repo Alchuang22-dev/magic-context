@@ -123,6 +123,30 @@ export interface RenderedMemoryRecall {
 	memoryIds: number[];
 }
 
+export interface ListMemoriesInput {
+	projectKey: string;
+	limit?: number;
+	includeArchived?: boolean;
+	nowMs?: number;
+}
+
+export interface MutateMemoryInput {
+	projectKey: string;
+	sessionId: string;
+	requestId: string;
+	action: "update" | "archive" | "merge";
+	ids: readonly number[];
+	nowMs: number;
+	content?: string;
+	category?: MemoryCategory;
+	reason?: string;
+}
+
+export interface MutateMemoryResult {
+	revision: number;
+	memories: RuntimeMemoryRecord[];
+}
+
 export function normalizeMemoryContent(content: string): string {
 	return content.toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -502,6 +526,177 @@ export class RuntimeMemory {
 			revision: collection.revision,
 			items,
 		};
+	}
+
+	async list(input: ListMemoriesInput): Promise<RuntimeMemoryRecord[]> {
+		if (input.projectKey.trim() === "") {
+			throw new InvalidMemoryCandidateError("projectKey must not be blank");
+		}
+		const collection = await this.store.readProject(input.projectKey);
+		const nowMs = input.nowMs ?? Date.now();
+		return collection.memories
+			.filter(
+				(memory) => input.includeArchived === true || isVisible(memory, nowMs),
+			)
+			.sort(
+				(left, right) =>
+					right.importance - left.importance ||
+					right.updatedAtMs - left.updatedAtMs ||
+					left.id - right.id,
+			)
+			.slice(0, Math.max(1, Math.min(100, Math.floor(input.limit ?? 10))))
+			.map(clone);
+	}
+
+	async get(
+		projectKey: string,
+		ids: readonly number[],
+	): Promise<RuntimeMemoryRecord[]> {
+		const requested = new Set(ids);
+		const collection = await this.store.readProject(projectKey);
+		return collection.memories
+			.filter((memory) => requested.has(memory.id))
+			.sort((left, right) => left.id - right.id)
+			.map(clone);
+	}
+
+	async mutate(input: MutateMemoryInput): Promise<MutateMemoryResult> {
+		if (input.projectKey.trim() === "" || input.sessionId.trim() === "") {
+			throw new InvalidMemoryCandidateError(
+				"projectKey and sessionId must not be blank",
+			);
+		}
+		const ids = [...new Set(input.ids)];
+		if (
+			ids.length === 0 ||
+			ids.some((id) => !Number.isInteger(id) || id <= 0)
+		) {
+			throw new InvalidMemoryCandidateError(
+				"ids must contain positive integers",
+			);
+		}
+		if (input.action === "update" && ids.length !== 1) {
+			throw new InvalidMemoryCandidateError("update requires exactly one id");
+		}
+		if (input.action === "merge" && ids.length < 2) {
+			throw new InvalidMemoryCandidateError("merge requires at least two ids");
+		}
+		if (
+			(input.action === "update" || input.action === "merge") &&
+			(!input.content || input.content.trim() === "")
+		) {
+			throw new InvalidMemoryCandidateError(
+				`${input.action} requires non-blank content`,
+			);
+		}
+		const content = input.content?.trim();
+		const preparedEmbedding = content
+			? memoryEmbedding(
+					this.embeddings.identity,
+					await safeEmbed(this.embeddings, content),
+				)
+			: undefined;
+		return this.store.updateProject(input.projectKey, (collection) => {
+			const targets = ids.map((id) =>
+				collection.memories.find((memory) => memory.id === id),
+			);
+			const missing = ids.filter((_id, index) => !targets[index]);
+			if (missing.length > 0) {
+				throw new InvalidMemoryCandidateError(
+					`unknown memory id(s): ${missing.join(", ")}`,
+				);
+			}
+			const records = targets as RuntimeMemoryRecord[];
+			if (
+				input.action !== "archive" &&
+				records.some((memory) => memory.status === "archived")
+			) {
+				throw new InvalidMemoryCandidateError(
+					"archived memories cannot be updated or merged",
+				);
+			}
+			let result: RuntimeMemoryRecord[];
+			if (input.action === "archive") {
+				for (const memory of records) {
+					memory.status = "archived";
+					memory.updatedAtMs = input.nowMs;
+					memory.metadata = {
+						...memory.metadata,
+						...(input.reason ? { archiveReason: input.reason } : {}),
+					};
+				}
+				result = records;
+			} else if (input.action === "update") {
+				const memory = records[0];
+				memory.content = content as string;
+				memory.normalizedHash = computeNormalizedMemoryHash(content as string);
+				memory.updatedAtMs = input.nowMs;
+				memory.lastSeenAtMs = input.nowMs;
+				memory.sourceSessionId = input.sessionId;
+				memory.sourceType = "tool";
+				memory.embedding = preparedEmbedding;
+				memory.sourceObservationIds = [
+					...memory.sourceObservationIds,
+					input.requestId,
+				].slice(-MAX_SOURCE_OBSERVATIONS);
+				result = [memory];
+			} else {
+				const category = input.category ?? records[0].category;
+				const normalizedHash = computeNormalizedMemoryHash(content as string);
+				let merged = collection.memories.find(
+					(memory) =>
+						!ids.includes(memory.id) &&
+						memory.category === category &&
+						memory.normalizedHash === normalizedHash &&
+						memory.status !== "archived",
+				);
+				if (!merged) {
+					merged = {
+						id: collection.nextId++,
+						projectKey: input.projectKey,
+						category,
+						content: content as string,
+						normalizedHash,
+						importance: Math.max(...records.map((memory) => memory.importance)),
+						scope: records[0].scope,
+						shareable: records.every((memory) => memory.shareable),
+						sourceSessionId: input.sessionId,
+						sourceType: "tool",
+						seenCount: records.reduce(
+							(sum, memory) => sum + memory.seenCount,
+							0,
+						),
+						retrievalCount: 0,
+						firstSeenAtMs: Math.min(
+							...records.map((memory) => memory.firstSeenAtMs),
+						),
+						createdAtMs: input.nowMs,
+						updatedAtMs: input.nowMs,
+						lastSeenAtMs: input.nowMs,
+						status: "active",
+						verificationStatus: "unverified",
+						mergedFrom: ids,
+						embedding: preparedEmbedding,
+						sourceObservationIds: [input.requestId],
+					};
+					collection.memories.push(merged);
+				}
+				for (const memory of records) {
+					memory.status = "archived";
+					memory.supersededByMemoryId = merged.id;
+					memory.updatedAtMs = input.nowMs;
+				}
+				result = [merged];
+			}
+			collection.revision += 1;
+			return {
+				collection,
+				result: {
+					revision: collection.revision,
+					memories: result.map(clone),
+				},
+			};
+		});
 	}
 
 	async recallAndRender(

@@ -93,6 +93,27 @@ export class LockedJsonDirectory {
 		}
 	}
 
+	async delete(fileName: string): Promise<boolean> {
+		await mkdir(this.directory, { recursive: true, mode: 0o700 });
+		const filePath = join(this.directory, fileName);
+		const lockPath = `${filePath}.lock`;
+		const lock = await this.#acquireLock(lockPath);
+		try {
+			try {
+				await unlink(filePath);
+				return true;
+			} catch (error) {
+				if (errorCode(error) === "ENOENT") return false;
+				throw new LockedJsonDirectoryError("failed to delete JSON document", {
+					cause: error,
+				});
+			}
+		} finally {
+			await lock.close().catch(() => undefined);
+			await unlink(lockPath).catch(() => undefined);
+		}
+	}
+
 	async #write<T>(filePath: string, value: T): Promise<void> {
 		const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 		try {

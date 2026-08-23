@@ -1,9 +1,14 @@
 import {
+	type CacheFeedbackRequest,
+	CONTEXT_TOOL_NAMES,
 	CORE_PROTOCOL_VERSION,
 	type ComposeContextRequest,
 	type ContextUsageObservation,
+	type ExecuteContextToolRequest,
 	MEMORY_CATEGORIES,
 	type ObserveTurnRequest,
+	type SessionLifecycleRequest,
+	type ToolEventRequest,
 } from "@cortexkit/magic-context-core-plugin";
 
 export class InvalidRuntimeRequestError extends Error {
@@ -240,6 +245,21 @@ function validateCommon(
 	validateUsage(value.usage, "usage");
 }
 
+function validateRuntimeIdentity(
+	value: unknown,
+): asserts value is Record<string, unknown> {
+	if (!isRecord(value)) {
+		throw new InvalidRuntimeRequestError("params must be an object");
+	}
+	if (value.protocolVersion !== CORE_PROTOCOL_VERSION) {
+		throw new InvalidRuntimeRequestError(
+			`unsupported protocol version ${String(value.protocolVersion)}`,
+		);
+	}
+	requireString(value.host, "host");
+	requireString(value.sessionId, "sessionId");
+}
+
 export function validateComposeRequest(value: unknown): ComposeContextRequest {
 	validateCommon(value);
 	requireString(value.requestId, "requestId");
@@ -293,6 +313,82 @@ export function validateObserveRequest(value: unknown): ObserveTurnRequest {
 	requireOptionalString(value.outcome.exitReason, "outcome.exitReason");
 	validateMemoryCandidates(value.memoryCandidates);
 	return structuredClone(value) as unknown as ObserveTurnRequest;
+}
+
+export function validateToolExecuteRequest(
+	value: unknown,
+): ExecuteContextToolRequest {
+	validateRuntimeIdentity(value);
+	requireString(value.requestId, "requestId");
+	if (!(CONTEXT_TOOL_NAMES as readonly unknown[]).includes(value.toolName)) {
+		throw new InvalidRuntimeRequestError("toolName is unsupported");
+	}
+	if (!isRecord(value.arguments)) {
+		throw new InvalidRuntimeRequestError("arguments must be an object");
+	}
+	if (value.messages !== undefined) validateMessages(value.messages);
+	requireFiniteNonNegative(value.invokedAtMs, "invokedAtMs");
+	requireOptionalString(value.projectId, "projectId");
+	requireOptionalString(value.modelKey, "modelKey");
+	return structuredClone(value) as unknown as ExecuteContextToolRequest;
+}
+
+export function validateSessionLifecycleRequest(
+	value: unknown,
+): SessionLifecycleRequest {
+	validateRuntimeIdentity(value);
+	requireString(value.eventId, "eventId");
+	if (
+		typeof value.action !== "string" ||
+		!["start", "end", "clone", "reset", "delete"].includes(value.action)
+	) {
+		throw new InvalidRuntimeRequestError("action is unsupported");
+	}
+	requireFiniteNonNegative(value.observedAtMs, "observedAtMs");
+	requireOptionalString(value.targetSessionId, "targetSessionId");
+	requireOptionalString(value.projectId, "projectId");
+	requireOptionalString(value.modelKey, "modelKey");
+	requireOptionalString(value.reason, "reason");
+	if (value.messages !== undefined) validateMessages(value.messages);
+	if (value.action === "clone" && !value.targetSessionId) {
+		throw new InvalidRuntimeRequestError(
+			"targetSessionId is required for clone",
+		);
+	}
+	return structuredClone(value) as unknown as SessionLifecycleRequest;
+}
+
+export function validateCacheFeedbackRequest(
+	value: unknown,
+): CacheFeedbackRequest {
+	validateRuntimeIdentity(value);
+	requireString(value.eventId, "eventId");
+	requireFiniteNonNegative(value.observedAtMs, "observedAtMs");
+	if (!isRecord(value.usage)) {
+		throw new InvalidRuntimeRequestError("usage must be an object");
+	}
+	validateUsage(value.usage, "usage");
+	requireOptionalString(value.projectId, "projectId");
+	requireOptionalString(value.modelKey, "modelKey");
+	return structuredClone(value) as unknown as CacheFeedbackRequest;
+}
+
+export function validateToolEventRequest(value: unknown): ToolEventRequest {
+	validateRuntimeIdentity(value);
+	requireString(value.eventId, "eventId");
+	requireFiniteNonNegative(value.observedAtMs, "observedAtMs");
+	if (value.phase !== "pre" && value.phase !== "post") {
+		throw new InvalidRuntimeRequestError("phase must be pre or post");
+	}
+	requireString(value.toolName, "toolName");
+	if (value.arguments !== undefined && !isRecord(value.arguments)) {
+		throw new InvalidRuntimeRequestError("arguments must be an object");
+	}
+	requireFiniteNonNegative(value.durationMs, "durationMs", { optional: true });
+	for (const field of ["status", "toolCallId", "turnId", "taskId"] as const) {
+		requireOptionalString(value[field], field);
+	}
+	return structuredClone(value) as unknown as ToolEventRequest;
 }
 
 export function validateUsageObservation(

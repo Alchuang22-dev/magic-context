@@ -190,12 +190,64 @@ function boundedText(source: string, maxCharacters: number): string {
 function fitMutation(
 	message: CanonicalMessage,
 	allowedTokens: number,
+	stablePartIds: boolean,
 ): { mutation: ContextMutation; estimatedTokens: number } | undefined {
 	const originalTokens = estimateCanonicalMessageTokens(message);
 	// A message-level replacement does not remove a native assistant tool call;
 	// claiming those input tokens were reclaimed would make accounting unsafe.
 	if (message.content.some((block) => block.kind === "tool_call")) {
 		return undefined;
+	}
+	if (stablePartIds) {
+		const candidates = message.content
+			.map((block, index) => ({ block, index, text: blockText(block) }))
+			.filter(
+				(item) =>
+					item.block.id &&
+					item.block.kind !== "tool_call" &&
+					item.text.length > 0,
+			)
+			.sort((left, right) => right.text.length - left.text.length);
+		for (const candidate of candidates) {
+			let low = 0;
+			let high = candidate.text.length;
+			let best: { content: string; estimatedTokens: number } | undefined;
+			while (low <= high) {
+				const middle = Math.floor((low + high) / 2);
+				const content = boundedText(candidate.text, middle);
+				const replacement = {
+					...message,
+					content: message.content.map((block, index) =>
+						index === candidate.index
+							? { kind: "text" as const, text: content }
+							: block,
+					),
+				};
+				const estimatedTokens = estimateCanonicalMessageTokens(replacement);
+				if (estimatedTokens <= allowedTokens) {
+					best = { content, estimatedTokens };
+					low = middle + 1;
+				} else {
+					high = middle - 1;
+				}
+			}
+			if (best && best.estimatedTokens < originalTokens) {
+				return {
+					mutation: {
+						target: {
+							messageId: message.id,
+							blockId: candidate.block.id,
+						},
+						operation:
+							candidate.block.kind === "tool_result"
+								? "truncate_tool"
+								: "replace",
+						content: best.content,
+					},
+					estimatedTokens: best.estimatedTokens,
+				};
+			}
+		}
 	}
 	const source = messageSourceText(message);
 	if (source.length === 0) return undefined;
@@ -235,6 +287,7 @@ function fitMutation(
 function trimSelectedMessages(
 	selected: readonly CanonicalMessage[],
 	targetTokens: number,
+	stablePartIds: boolean,
 ): { mutations: ContextMutation[]; estimatedTokens: number } {
 	const estimates = new Map(
 		selected.map((message) => [
@@ -268,7 +321,7 @@ function trimSelectedMessages(
 		if (total <= targetTokens) break;
 		const currentTokens = estimates.get(message.id) ?? 0;
 		const allowedTokens = Math.max(1, targetTokens - (total - currentTokens));
-		const fitted = fitMutation(message, allowedTokens);
+		const fitted = fitMutation(message, allowedTokens, stablePartIds);
 		if (!fitted) continue;
 		mutations.push(fitted.mutation);
 		estimates.set(message.id, fitted.estimatedTokens);
@@ -297,6 +350,14 @@ export interface RuntimeMemoryInjection {
 	epoch: number;
 	fingerprint: string;
 	estimatedTokens: number;
+}
+
+export interface RuntimeTriggerInjection {
+	content: string;
+	epoch: number;
+	fingerprint: string;
+	estimatedTokens: number;
+	triggerIds: string[];
 }
 
 function configuredContextLimit(
@@ -336,8 +397,16 @@ export function composeContext(
 	config: RuntimePolicyConfig,
 	nowMs: number,
 	memoryInjection?: RuntimeMemoryInjection,
+	triggerInjection?: RuntimeTriggerInjection,
 ): ComposeContextOutcome {
-	const forwardTokens = estimateCanonicalTokens(request.messages);
+	const explicitlyDropped = new Set(state.droppedMessageOrdinals);
+	const effectiveMessages = request.messages.filter(
+		(message) => !explicitlyDropped.has(message.ordinal),
+	);
+	const explicitDropMessages = request.messages.filter((message) =>
+		explicitlyDropped.has(message.ordinal),
+	);
+	const forwardTokens = estimateCanonicalTokens(effectiveMessages);
 	const observed = observedUsage(request, state);
 	const configuredLimit = configuredContextLimit(request, state);
 	if (configuredLimit === 0) {
@@ -346,12 +415,28 @@ export function composeContext(
 			requestId: request.requestId,
 			decision: "defer",
 			retain: { messageIds: request.messages.map((message) => message.id) },
-			mutations: [],
-			injections: [],
+			mutations: explicitDropMessages.map((message) => ({
+				target: { messageId: message.id },
+				operation: "drop" as const,
+			})),
+			injections: triggerInjection
+				? [
+						{
+							slot: "tail_nudge" as const,
+							content: triggerInjection.content,
+							epoch: triggerInjection.epoch,
+							fingerprint: triggerInjection.fingerprint,
+						},
+					]
+				: [],
 			accounting: {
-				estimatedInputTokens: forwardTokens,
+				estimatedInputTokens:
+					forwardTokens + (triggerInjection?.estimatedTokens ?? 0),
 				hardLimitTokens: 0,
-				cacheDecision: "hit_safe",
+				cacheDecision:
+					explicitDropMessages.length > 0 || triggerInjection
+						? "bust_required"
+						: "hit_safe",
 			},
 			reason: "unknown-context-limit",
 		};
@@ -394,7 +479,7 @@ export function composeContext(
 		nowMs,
 		modelKey: request.modelKey,
 		contextLimitTokens: hardLimitTokens,
-		midToolUse: hasOpenToolArc(request.messages),
+		midToolUse: hasOpenToolArc(effectiveMessages),
 		deferredExecute: state.deferredExecute,
 		drainLatchActiveSinceMs: state.drainLatchActiveSinceMs,
 	});
@@ -416,7 +501,9 @@ export function composeContext(
 		1,
 		partition.workingTokens + partition.historyTokens,
 	);
-	const injectionTokens = memoryInjection?.estimatedTokens ?? 0;
+	const injectionTokens =
+		(memoryInjection?.estimatedTokens ?? 0) +
+		(triggerInjection?.estimatedTokens ?? 0);
 	const deferredTarget = Math.max(
 		1,
 		Math.floor(hardLimitTokens * 0.9) - injectionTokens,
@@ -425,14 +512,21 @@ export function composeContext(
 		schedule.pass === "defer" ? deferredTarget : scheduledTarget;
 	const selected =
 		forwardTokens <= targetTokens
-			? [...request.messages]
-			: selectProtectedTail(request.messages, targetTokens);
-	const trimmed = trimSelectedMessages(selected, targetTokens);
+			? [...effectiveMessages]
+			: selectProtectedTail(effectiveMessages, targetTokens);
+	const trimmed = trimSelectedMessages(
+		selected,
+		targetTokens,
+		request.capabilities.stablePartIds,
+	);
 	const transcriptChanged =
-		selected.length !== request.messages.length || trimmed.mutations.length > 0;
+		effectiveMessages.length !== request.messages.length ||
+		selected.length !== effectiveMessages.length ||
+		trimmed.mutations.length > 0;
 	const memoryChanged =
 		memoryInjection?.fingerprint !== state.activeMemoryFingerprint;
-	const changed = transcriptChanged || memoryChanged;
+	const changed =
+		transcriptChanged || memoryChanged || Boolean(triggerInjection);
 	const decision = !changed
 		? schedule.pass === "defer"
 			? "defer"
@@ -441,27 +535,51 @@ export function composeContext(
 			? "safe_fallback"
 			: "serve";
 	const firstTail = selected.find((message) => message.role !== "system");
-	const injections = memoryInjection
-		? [
-				{
-					slot: request.capabilities.systemSuffixInjection
-						? ("stable_prefix" as const)
-						: ("volatile_delta" as const),
-					content: memoryInjection.content,
-					epoch: memoryInjection.epoch,
-					fingerprint: memoryInjection.fingerprint,
-				},
-			]
-		: [];
+	const injections = [
+		...(memoryInjection
+			? [
+					{
+						slot: request.capabilities.systemSuffixInjection
+							? ("stable_prefix" as const)
+							: ("volatile_delta" as const),
+						content: memoryInjection.content,
+						epoch: memoryInjection.epoch,
+						fingerprint: memoryInjection.fingerprint,
+					},
+				]
+			: []),
+		...(triggerInjection
+			? [
+					{
+						slot: "tail_nudge" as const,
+						content: triggerInjection.content,
+						epoch: triggerInjection.epoch,
+						fingerprint: triggerInjection.fingerprint,
+					},
+				]
+			: []),
+	];
+	const retained = new Set([
+		...selected.map((message) => message.id),
+		...explicitDropMessages.map((message) => message.id),
+	]);
 	const plan: ContextPlan = {
 		protocolVersion: 1,
 		requestId: request.requestId,
 		decision,
 		retain: {
-			messageIds: selected.map((message) => message.id),
+			messageIds: request.messages
+				.filter((message) => retained.has(message.id))
+				.map((message) => message.id),
 			protectedTailStart: firstTail?.id,
 		},
-		mutations: trimmed.mutations,
+		mutations: [
+			...explicitDropMessages.map((message) => ({
+				target: { messageId: message.id },
+				operation: "drop" as const,
+			})),
+			...trimmed.mutations,
+		],
 		injections,
 		accounting: {
 			estimatedInputTokens: trimmed.estimatedTokens + injectionTokens,

@@ -46,16 +46,20 @@ importing OpenCode plugin sources.
 **Hermes Plugin (`plugin/hermes-plugin/`):**
 Registers the `magic-context` ContextEngine, maps Hermes OpenAI-format messages
 to the core protocol, materializes stable/volatile injection slots using
-Hermes-safe layout rules, and provides a bounded fallback when the external
-runtime is unavailable.
+Hermes-safe layout rules, applies block-level mutations, exposes the complete
+`ctx_*` tool surface, forwards provider cache/tool events and session lifecycle,
+and provides a bounded fallback when the external runtime is unavailable.
 
 **Independent Runtime (`plugin/runtime/`):**
-Owns the two-method `context.compose` / `turn.observe` Interface. It applies
-core pressure, budget, and scheduling policy; preserves system messages and
-tool-complete recent turns; records observations idempotently; and persists
+Owns the `context.compose` / `turn.observe` data plane and `tool.execute`,
+`session.lifecycle`, `cache.observe`, and `tool.observe` control plane. It
+applies core pressure, budget, and scheduling policy; preserves system messages
+and tool-complete recent turns; records observations idempotently; and persists
 per-session JSON state through an atomic state-store Adapter. Its Memory Module
 persists project facts, performs exact deduplication and hybrid recall, and
-renders budgeted stable-prefix injections. Its NDJSON CLI works as either a
+renders budgeted stable-prefix injections. The control plane implements all
+context tools, recoverable reduction, lifecycle transitions, cache feedback,
+tool events, and one-shot automatic triggers. Its NDJSON CLI works as either a
 one-shot command or a long-running stdio process.
 
 **`src/`:**

@@ -38,7 +38,9 @@ def _message_id(message: dict[str, Any], ordinal: int) -> str:
     return f"hermes:derived:{digest}"
 
 
-def _canonical_content(message: dict[str, Any]) -> list[dict[str, Any]]:
+def _canonical_content(
+    message: dict[str, Any], message_id: str
+) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     content = message.get("content", "")
     if message.get("role") != "tool":
@@ -106,6 +108,9 @@ def _canonical_content(message: dict[str, Any]) -> list[dict[str, Any]]:
                 "output": copy.deepcopy(content),
             }
         )
+    for index, block in enumerate(blocks):
+        native_id = block.get("id") or block.get("callId") or index
+        block["id"] = f"{message_id}:block:{block.get('kind', 'opaque')}:{native_id}:{index}"
     return blocks
 
 
@@ -122,7 +127,7 @@ def snapshot_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, An
                 "id": message_id,
                 "ordinal": index + 1,
                 "role": str(message.get("role", "user")),
-                "content": _canonical_content(message),
+                "content": _canonical_content(message, message_id),
             }
         )
     return canonical, index_by_id
@@ -179,7 +184,7 @@ def compose_request(
         "capabilities": {
             "preRequestTransform": True,
             "stableMessageIds": any("_row_id" in message for message in messages),
-            "stablePartIds": False,
+            "stablePartIds": True,
             "usageObservation": True,
             "auxiliaryLlm": True,
             "toolRegistration": True,
@@ -249,6 +254,142 @@ def observe_request(
     return request
 
 
+def tool_execute_request(
+    messages: list[dict[str, Any]],
+    *,
+    request_id: str,
+    session_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    invoked_at_ms: int,
+    model_key: str | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    canonical, _ = snapshot_messages(messages)
+    request: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id,
+        "host": "hermes",
+        "sessionId": session_id,
+        "toolName": tool_name,
+        "arguments": copy.deepcopy(arguments),
+        "messages": canonical,
+        "invokedAtMs": max(0, int(invoked_at_ms)),
+    }
+    if model_key:
+        request["modelKey"] = str(model_key)
+    if project_id:
+        request["projectId"] = str(project_id)
+    return request
+
+
+def lifecycle_request(
+    *,
+    event_id: str,
+    session_id: str,
+    action: str,
+    observed_at_ms: int,
+    messages: list[dict[str, Any]] | None = None,
+    target_session_id: str | None = None,
+    model_key: str | None = None,
+    project_id: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "eventId": event_id,
+        "host": "hermes",
+        "sessionId": session_id,
+        "action": action,
+        "observedAtMs": max(0, int(observed_at_ms)),
+    }
+    if messages is not None:
+        request["messages"] = snapshot_messages(messages)[0]
+    optional = {
+        "targetSessionId": target_session_id,
+        "modelKey": model_key,
+        "projectId": project_id,
+        "reason": reason,
+    }
+    for key, value in optional.items():
+        if value:
+            request[key] = str(value)
+    return request
+
+
+def cache_feedback_request(
+    *,
+    event_id: str,
+    session_id: str,
+    observed_at_ms: int,
+    usage: dict[str, Any],
+    context_limit_tokens: int = 0,
+    model_key: str | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "eventId": event_id,
+        "host": "hermes",
+        "sessionId": session_id,
+        "observedAtMs": max(0, int(observed_at_ms)),
+        "usage": canonical_usage(usage, context_limit_tokens),
+    }
+    if model_key:
+        request["modelKey"] = str(model_key)
+    if project_id:
+        request["projectId"] = str(project_id)
+    return request
+
+
+def tool_event_request(
+    *,
+    event_id: str,
+    session_id: str,
+    observed_at_ms: int,
+    phase: str,
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+    result: Any = None,
+    status: str | None = None,
+    duration_ms: int | float | None = None,
+    tool_call_id: str | None = None,
+    turn_id: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "eventId": event_id,
+        "host": "hermes",
+        "sessionId": session_id,
+        "observedAtMs": max(0, int(observed_at_ms)),
+        "phase": phase,
+        "toolName": tool_name,
+    }
+    if arguments is not None:
+        request["arguments"] = copy.deepcopy(arguments)
+    if result is not None:
+        serialized = _stable_json(result)
+        request["result"] = result if len(serialized) <= 100_000 else {
+            "truncated": True,
+            "characters": len(serialized),
+            "preview": serialized[:8_000],
+        }
+    if status:
+        request["status"] = str(status)
+    if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
+        request["durationMs"] = max(0, duration_ms)
+    optional = {
+        "toolCallId": tool_call_id,
+        "turnId": turn_id,
+        "taskId": task_id,
+    }
+    for key, value in optional.items():
+        if value:
+            request[key] = str(value)
+    return request
+
+
 def _injection_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -269,6 +410,81 @@ def _append_content(message: dict[str, Any], text: str, *, prepend: bool = False
             content.append(block)
         return
     message["content"] = text
+
+
+def _mutate_content_value(
+    message: dict[str, Any],
+    content_index: int,
+    operation: str,
+    content: str | None,
+) -> None:
+    native = message.get("content", "")
+    if isinstance(native, list):
+        if not 0 <= content_index < len(native):
+            raise InvalidContextPlanError("block mutation content index is invalid")
+        if operation == "drop":
+            native.pop(content_index)
+            return
+        raw = native[content_index]
+        if isinstance(raw, dict) and raw.get("type") in {
+            "text",
+            "input_text",
+            "output_text",
+        }:
+            raw["text"] = content
+        elif isinstance(raw, dict) and raw.get("type") in {"thinking", "reasoning"}:
+            if "thinking" in raw and "text" not in raw:
+                raw["thinking"] = content
+            else:
+                raw["text"] = content
+        else:
+            native[content_index] = {"type": "text", "text": content}
+        return
+    if content_index != 0:
+        raise InvalidContextPlanError("block mutation content index is invalid")
+    message["content"] = "" if operation == "drop" else content
+
+
+def _mutate_block(
+    message: dict[str, Any],
+    canonical_message: dict[str, Any],
+    block_id: str,
+    operation: str,
+    content: str | None,
+) -> None:
+    blocks = canonical_message.get("content")
+    if not isinstance(blocks, list):
+        raise InvalidContextPlanError("canonical message content is invalid")
+    block_index = next(
+        (
+            index
+            for index, block in enumerate(blocks)
+            if isinstance(block, dict) and block.get("id") == block_id
+        ),
+        None,
+    )
+    if block_index is None:
+        raise InvalidContextPlanError(f"mutation references unknown block {block_id}")
+
+    if message.get("role") == "tool":
+        if block_index != 0:
+            raise InvalidContextPlanError("tool-result block index is invalid")
+        message["content"] = "" if operation == "drop" else content
+        return
+
+    native_content = message.get("content", "")
+    native_content_count = len(native_content) if isinstance(native_content, list) else 1
+    if block_index < native_content_count:
+        _mutate_content_value(message, block_index, operation, content)
+        return
+
+    tool_index = block_index - native_content_count
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not 0 <= tool_index < len(tool_calls):
+        raise InvalidContextPlanError("block mutation tool-call index is invalid")
+    if operation != "drop":
+        raise InvalidContextPlanError("Hermes tool-call blocks only support drop")
+    tool_calls.pop(tool_index)
 
 
 def materialize_plan(
@@ -324,16 +540,32 @@ def materialize_plan(
         original_index = index_by_id[message_id]
         if original_index not in selected_by_original_index:
             continue
-        if target.get("blockId") is not None:
-            raise InvalidContextPlanError("Hermes block-level mutation is not implemented yet")
         selected_index = selected_by_original_index[original_index]
         operation = mutation.get("operation")
+        content = mutation.get("content")
+        if operation in {"replace", "truncate_tool", "edit_marker"} and not isinstance(
+            content, str
+        ):
+            raise InvalidContextPlanError(f"{operation} mutation requires string content")
+        block_id = target.get("blockId")
+        if block_id is not None:
+            if not isinstance(block_id, str):
+                raise InvalidContextPlanError("mutation blockId must be a string")
+            selected_message = selected[selected_index]
+            if not isinstance(selected_message, dict):
+                continue
+            canonical_message = request["messages"][original_index]
+            _mutate_block(
+                selected_message,
+                canonical_message,
+                block_id,
+                str(operation),
+                content if isinstance(content, str) else None,
+            )
+            continue
         if operation == "drop":
             selected[selected_index] = None
         elif operation in {"replace", "truncate_tool", "edit_marker"}:
-            content = mutation.get("content")
-            if not isinstance(content, str):
-                raise InvalidContextPlanError(f"{operation} mutation requires string content")
             selected[selected_index]["content"] = content
         else:
             raise InvalidContextPlanError(f"unknown ContextPlan mutation {operation}")

@@ -26,9 +26,33 @@ def register(ctx) -> None:
         description="Performs bounded background context-maintenance tasks.",
         defaults={"temperature": 0.1},
     )
-    ctx.register_context_engine(
-        MagicContextEngine(runtime=RuntimeBridge.from_environment(), llm=ctx.llm)
-    )
+    engine = MagicContextEngine(runtime=RuntimeBridge.from_environment(), llm=ctx.llm)
+    ctx.register_context_engine(engine)
+
+    if hasattr(ctx, "register_hook"):
+        ctx.register_hook(
+            "pre_tool_call",
+            lambda **event: engine.observe_tool_event("pre", **event),
+        )
+        ctx.register_hook(
+            "post_tool_call",
+            lambda **event: engine.observe_tool_event("post", **event),
+        )
+
+        def on_session_reset(
+            session_id: str = "", reason: str = "host_reset", **_: object
+        ) -> None:
+            if session_id:
+                engine.observe_session_reset(session_id, reason=reason)
+
+        def on_session_finalize(
+            session_id: str = "", reason: str = "", **_: object
+        ) -> None:
+            if session_id and any(word in reason.lower() for word in ("delete", "prune")):
+                engine.on_session_delete(session_id, reason=reason)
+
+        ctx.register_hook("on_session_reset", on_session_reset)
+        ctx.register_hook("on_session_finalize", on_session_finalize)
 
 
 __all__ = ["MagicContextEngine", "RuntimeBridge", "RuntimeBridgeError", "register"]

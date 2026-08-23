@@ -1,4 +1,5 @@
 export * from "./compose";
+export * from "./control-plane";
 export * from "./memory";
 export * from "./memory-store";
 export * from "./runtime";
