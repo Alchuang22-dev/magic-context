@@ -6,11 +6,13 @@ import copy
 import hashlib
 import json
 import math
+import re
 from typing import Any, Iterable
 
 PROTOCOL_VERSION = 1
 _INJECTION_ORDER = {"stable_prefix": 0, "volatile_delta": 1, "tail_nudge": 2}
 _TRUNCATION_MARKER = "\n...[bounded by Magic Context safe fallback]...\n"
+_TAG_PREFIX = re.compile(r"^(?:§\d+§\s*)+")
 
 
 class InvalidContextPlanError(ValueError):
@@ -192,6 +194,7 @@ def compose_request(
             "requestBlocking": False,
             "systemSuffixInjection": True,
             "promptCacheFacts": False,
+            "blockIndexMutations": True,
         },
         "messages": canonical,
     }
@@ -453,6 +456,11 @@ def _append_content(message: dict[str, Any], text: str, *, prepend: bool = False
     message["content"] = text
 
 
+def _prefix_tag(value: Any, tag: str) -> str:
+    text = value if isinstance(value, str) else _stable_json(value)
+    return f"{tag} {_TAG_PREFIX.sub('', text)}"
+
+
 def _mutate_content_value(
     message: dict[str, Any],
     content_index: int,
@@ -472,7 +480,11 @@ def _mutate_content_value(
             "input_text",
             "output_text",
         }:
-            raw["text"] = content
+            raw["text"] = (
+                _prefix_tag(raw.get("text", ""), str(content))
+                if operation == "prefix_tag"
+                else content
+            )
         elif isinstance(raw, dict) and raw.get("type") in {"thinking", "reasoning"}:
             if "thinking" in raw and "text" not in raw:
                 raw["thinking"] = content
@@ -483,7 +495,11 @@ def _mutate_content_value(
         return
     if content_index != 0:
         raise InvalidContextPlanError("block mutation content index is invalid")
-    message["content"] = "" if operation == "drop" else content
+    message["content"] = (
+        _prefix_tag(message.get("content", ""), str(content))
+        if operation == "prefix_tag"
+        else "" if operation == "drop" else content
+    )
 
 
 def _mutate_block(
@@ -510,7 +526,11 @@ def _mutate_block(
     if message.get("role") == "tool":
         if block_index != 0:
             raise InvalidContextPlanError("tool-result block index is invalid")
-        message["content"] = "" if operation == "drop" else content
+        message["content"] = (
+            _prefix_tag(message.get("content", ""), str(content))
+            if operation == "prefix_tag"
+            else "" if operation == "drop" else content
+        )
         return
 
     native_content = message.get("content", "")
@@ -584,11 +604,24 @@ def materialize_plan(
         selected_index = selected_by_original_index[original_index]
         operation = mutation.get("operation")
         content = mutation.get("content")
-        if operation in {"replace", "truncate_tool", "edit_marker"} and not isinstance(
+        if operation in {"replace", "truncate_tool", "edit_marker", "prefix_tag"} and not isinstance(
             content, str
         ):
             raise InvalidContextPlanError(f"{operation} mutation requires string content")
         block_id = target.get("blockId")
+        block_index = target.get("blockIndex")
+        if block_id is not None and block_index is not None:
+            raise InvalidContextPlanError("mutation target cannot use blockId and blockIndex")
+        if block_index is not None:
+            if not isinstance(block_index, int) or block_index < 0:
+                raise InvalidContextPlanError("mutation blockIndex must be non-negative")
+            canonical_blocks = request["messages"][original_index].get("content", [])
+            if not isinstance(canonical_blocks, list) or block_index >= len(canonical_blocks):
+                raise InvalidContextPlanError("mutation blockIndex is invalid")
+            candidate_id = canonical_blocks[block_index].get("id")
+            if not isinstance(candidate_id, str):
+                raise InvalidContextPlanError("canonical blockIndex has no materializable id")
+            block_id = candidate_id
         if block_id is not None:
             if not isinstance(block_id, str):
                 raise InvalidContextPlanError("mutation blockId must be a string")

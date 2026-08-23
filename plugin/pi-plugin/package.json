@@ -1,0 +1,25 @@
+{
+  "name": "@cortexkit/pi-magic-context-core-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/adapter.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "biome check src",
+    "lint:fix": "biome check --write src"
+  },
+  "dependencies": {
+    "@cortexkit/magic-context-adapter-kit": "workspace:*",
+    "@cortexkit/magic-context-core-plugin": "workspace:*",
+    "@cortexkit/magic-context-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
+    "@types/bun": "^1.3.10",
+    "typescript": "^5.8.0"
+  }
+}

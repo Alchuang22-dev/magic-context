@@ -9,7 +9,8 @@ export type ContextMutationKind =
 	| "drop"
 	| "replace"
 	| "truncate_tool"
-	| "edit_marker";
+	| "edit_marker"
+	| "prefix_tag";
 
 export interface AgentCapabilities {
 	preRequestTransform: boolean;
@@ -22,6 +23,8 @@ export interface AgentCapabilities {
 	requestBlocking: boolean;
 	systemSuffixInjection: boolean;
 	promptCacheFacts: boolean;
+	/** Apply a mutation to a block by its request-local canonical index. */
+	blockIndexMutations?: boolean;
 }
 
 export const CONSERVATIVE_CAPABILITIES: Readonly<AgentCapabilities> =
@@ -36,6 +39,7 @@ export const CONSERVATIVE_CAPABILITIES: Readonly<AgentCapabilities> =
 		requestBlocking: false,
 		systemSuffixInjection: false,
 		promptCacheFacts: false,
+		blockIndexMutations: false,
 	});
 
 export function resolveCapabilities(
@@ -429,7 +433,7 @@ export type ContextRuntimeResult =
 	| HostCallbackResolutionReceipt;
 
 export interface ContextMutation {
-	target: { messageId: string; blockId?: string };
+	target: { messageId: string; blockId?: string; blockIndex?: number };
 	operation: ContextMutationKind;
 	content?: string;
 }
@@ -528,6 +532,14 @@ export function validateContextPlan(
 				`mutation references unknown message ${mutation.target.messageId}`,
 			);
 		}
+		if (
+			mutation.target.blockId !== undefined &&
+			mutation.target.blockIndex !== undefined
+		) {
+			throw new InvalidContextPlanError(
+				"mutation target cannot contain both blockId and blockIndex",
+			);
+		}
 		if (mutation.target.blockId !== undefined) {
 			if (!request.capabilities.stablePartIds) {
 				throw new InvalidContextPlanError(
@@ -544,8 +556,35 @@ export function validateContextPlan(
 				);
 			}
 		}
+		if (mutation.target.blockIndex !== undefined) {
+			if (!request.capabilities.blockIndexMutations) {
+				throw new InvalidContextPlanError(
+					"host cannot materialize block-index mutations",
+				);
+			}
+			if (
+				!Number.isInteger(mutation.target.blockIndex) ||
+				mutation.target.blockIndex < 0 ||
+				mutation.target.blockIndex >=
+					(request.messages.find(
+						(message) => message.id === mutation.target.messageId,
+					)?.content.length ?? 0)
+			) {
+				throw new InvalidContextPlanError(
+					`mutation references unknown block index ${String(mutation.target.blockIndex)}`,
+				);
+			}
+		}
 		if (mutation.operation === "replace" && mutation.content === undefined) {
 			throw new InvalidContextPlanError("replace mutation requires content");
+		}
+		if (
+			mutation.operation === "prefix_tag" &&
+			!/^§\d+§$/.test(mutation.content ?? "")
+		) {
+			throw new InvalidContextPlanError(
+				"prefix_tag mutation requires a canonical §N§ token",
+			);
 		}
 	}
 	const injectionKeys = new Set<string>();

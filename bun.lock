@@ -5,7 +5,7 @@
     "": {},
     "packages/cli": {
       "name": "@cortexkit/magic-context",
-      "version": "0.37.0",
+      "version": "0.39.0",
       "bin": {
         "magic-context": "dist/index.js",
       },
@@ -70,7 +70,7 @@
     },
     "packages/pi-plugin": {
       "name": "@cortexkit/pi-magic-context",
-      "version": "0.37.0",
+      "version": "0.39.0",
       "dependencies": {
         "@cortexkit/subc-client": "0.4.1",
         "@huggingface/transformers": "^4.1.0",
@@ -102,7 +102,7 @@
     },
     "packages/plugin": {
       "name": "@cortexkit/opencode-magic-context",
-      "version": "0.37.0",
+      "version": "0.39.0",
       "dependencies": {
         "@cortexkit/subc-client": "0.4.1",
         "@huggingface/transformers": "^4.1.0",
@@ -145,9 +145,50 @@
         "typescript": "^5.8.0",
       },
     },
+    "plugin/adapter-kit": {
+      "name": "@cortexkit/magic-context-adapter-kit",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cortexkit/magic-context-core-plugin": "workspace:*",
+        "@cortexkit/magic-context-runtime": "workspace:*",
+      },
+      "devDependencies": {
+        "@biomejs/biome": "^2.5.1",
+        "@types/bun": "^1.3.10",
+        "typescript": "^5.8.0",
+      },
+    },
     "plugin/core-plugin": {
       "name": "@cortexkit/magic-context-core-plugin",
       "version": "0.1.0",
+      "devDependencies": {
+        "@biomejs/biome": "^2.5.1",
+        "@types/bun": "^1.3.10",
+        "typescript": "^5.8.0",
+      },
+    },
+    "plugin/opencode-plugin": {
+      "name": "@cortexkit/opencode-magic-context-core-plugin",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cortexkit/magic-context-adapter-kit": "workspace:*",
+        "@cortexkit/magic-context-core-plugin": "workspace:*",
+        "@cortexkit/magic-context-runtime": "workspace:*",
+      },
+      "devDependencies": {
+        "@biomejs/biome": "^2.5.1",
+        "@types/bun": "^1.3.10",
+        "typescript": "^5.8.0",
+      },
+    },
+    "plugin/pi-plugin": {
+      "name": "@cortexkit/pi-magic-context-core-plugin",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cortexkit/magic-context-adapter-kit": "workspace:*",
+        "@cortexkit/magic-context-core-plugin": "workspace:*",
+        "@cortexkit/magic-context-runtime": "workspace:*",
+      },
       "devDependencies": {
         "@biomejs/biome": "^2.5.1",
         "@types/bun": "^1.3.10",
@@ -387,6 +428,8 @@
 
     "@cortexkit/magic-context": ["@cortexkit/magic-context@workspace:packages/cli"],
 
+    "@cortexkit/magic-context-adapter-kit": ["@cortexkit/magic-context-adapter-kit@workspace:plugin/adapter-kit"],
+
     "@cortexkit/magic-context-core-plugin": ["@cortexkit/magic-context-core-plugin@workspace:plugin/core-plugin"],
 
     "@cortexkit/magic-context-dashboard": ["@cortexkit/magic-context-dashboard@workspace:packages/dashboard"],
@@ -395,9 +438,13 @@
 
     "@cortexkit/opencode-magic-context": ["@cortexkit/opencode-magic-context@workspace:packages/plugin"],
 
+    "@cortexkit/opencode-magic-context-core-plugin": ["@cortexkit/opencode-magic-context-core-plugin@workspace:plugin/opencode-plugin"],
+
     "@cortexkit/opencode-magic-context-e2e": ["@cortexkit/opencode-magic-context-e2e@workspace:packages/e2e-tests"],
 
     "@cortexkit/pi-magic-context": ["@cortexkit/pi-magic-context@workspace:packages/pi-plugin"],
+
+    "@cortexkit/pi-magic-context-core-plugin": ["@cortexkit/pi-magic-context-core-plugin@workspace:plugin/pi-plugin"],
 
     "@cortexkit/retina-local-fs": ["@cortexkit/retina-local-fs@workspace:packages/retina-local-fs"],
 

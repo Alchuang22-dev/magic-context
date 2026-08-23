@@ -112,11 +112,34 @@ describe("runtime control plane", () => {
 			message("current-answer", 4, "assistant", "working"),
 			message("latest-user", 5, "user", "latest"),
 		];
+		const capabilities = resolveCapabilities({
+			stablePartIds: true,
+			blockIndexMutations: true,
+			systemSuffixInjection: true,
+		});
+		await runtime.handle({
+			method: "context.compose",
+			params: {
+				protocolVersion: CORE_PROTOCOL_VERSION,
+				requestId: "compose-before-reduce",
+				host: "hermes",
+				sessionId: "session-a",
+				projectId: "project-a",
+				budgetTokens: 4_000,
+				capabilities,
+				messages,
+			},
+		});
 		const reduced = await runtime.handle({
 			method: "tool.execute",
-			params: toolRequest("ctx_reduce", "reduce", { drop: "1-2" }, messages),
+			params: toolRequest(
+				"ctx_reduce",
+				"reduce",
+				{ drop: "§1§,§2§" },
+				messages,
+			),
 		});
-		expect("output" in reduced && reduced.output).toContain("§1§");
+		expect("output" in reduced && reduced.output).toContain("§1§, §2§");
 
 		const compose: ComposeContextRequest = {
 			protocolVersion: CORE_PROTOCOL_VERSION,
@@ -125,10 +148,7 @@ describe("runtime control plane", () => {
 			sessionId: "session-a",
 			projectId: "project-a",
 			budgetTokens: 4_000,
-			capabilities: resolveCapabilities({
-				stablePartIds: true,
-				systemSuffixInjection: true,
-			}),
+			capabilities,
 			messages,
 		};
 		const plan = await runtime.handle({
@@ -138,8 +158,17 @@ describe("runtime control plane", () => {
 		if (!("mutations" in plan)) throw new Error("expected plan");
 		expect(plan.mutations).toEqual(
 			expect.arrayContaining([
-				{ target: { messageId: "old-user" }, operation: "drop" },
-				{ target: { messageId: "old-answer" }, operation: "drop" },
+				{
+					target: { messageId: "old-user", blockId: "old-user:text" },
+					operation: "drop",
+				},
+				{
+					target: {
+						messageId: "old-answer",
+						blockId: "old-answer:text",
+					},
+					operation: "drop",
+				},
 			]),
 		);
 
@@ -148,10 +177,11 @@ describe("runtime control plane", () => {
 			params: toolRequest(
 				"ctx_expand",
 				"expand-after-reduce",
-				{ message: 1 },
+				{ tag: 1 },
 				messages,
 			),
 		});
+		expect("output" in expanded && expanded.output).toContain("§1§");
 		expect("output" in expanded && expanded.output).toContain("old question");
 	});
 

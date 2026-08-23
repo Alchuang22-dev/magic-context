@@ -14,9 +14,17 @@ under `packages/plugin` (OpenCode) and `packages/pi-plugin` (Pi/OMP).
   budgeted injection. It also owns Historian validation/publication,
   Dreamer/Sidekick scheduling, durable callback leases, retry, and attempt
   fencing.
+- `adapter-kit/` owns the shared host execution chain: compose/observe,
+  lifecycle, cache/tool feedback, context tools, and reverse callbacks.
+- `opencode-plugin/` and `pi-plugin/` contain only native transcript codecs and
+  ContextPlan materializers. Their published legacy entrypoints are not yet
+  switched; see [MIGRATION.md](./MIGRATION.md).
 - `hermes-plugin/` is a Hermes `ContextEngine` Adapter for that Interface.
   It executes runtime callbacks through the host-owned `ctx.llm` seam; it does
   not decide what auxiliary output is valid or when it becomes durable.
+
+The domain vocabulary and ownership rules are recorded in
+[CONTEXT.md](./CONTEXT.md).
 
 ## Isolation rules
 

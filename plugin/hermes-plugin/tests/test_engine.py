@@ -317,6 +317,22 @@ class MagicContextEngineTests(unittest.TestCase):
                     "operation": "truncate_tool",
                     "content": "bounded result",
                 },
+                {
+                    "target": {
+                        "messageId": first_message["id"],
+                        "blockIndex": 0,
+                    },
+                    "operation": "prefix_tag",
+                    "content": "§7§",
+                },
+                {
+                    "target": {
+                        "messageId": tool_message["id"],
+                        "blockId": tool_message["content"][0]["id"],
+                    },
+                    "operation": "prefix_tag",
+                    "content": "§8§",
+                },
             ],
             "injections": [],
             "accounting": {
@@ -327,9 +343,9 @@ class MagicContextEngineTests(unittest.TestCase):
         }
 
         selected = adapter.materialize_plan(messages, request, indexes, plan)
-        self.assertEqual(selected[0]["content"][0]["text"], "bounded text")
+        self.assertEqual(selected[0]["content"][0]["text"], "§7§ bounded text")
         self.assertEqual(selected[0]["content"][1]["text"], "keep me")
-        self.assertEqual(selected[1]["content"], "bounded result")
+        self.assertEqual(selected[1]["content"], "§8§ bounded result")
         self.assertEqual(messages[0]["content"][0]["text"], "replace me")
 
     def test_context_tools_are_forwarded_to_the_runtime(self):
@@ -705,7 +721,9 @@ class MagicContextEngineTests(unittest.TestCase):
             engine.on_session_start("session-real")
             messages = [{"role": "user", "content": "hello runtime"}]
 
-            self.assertEqual(engine.select_context(messages, budget_tokens=4000), messages)
+            selected = engine.select_context(messages, budget_tokens=4000)
+            self.assertRegex(selected[0]["content"], r"^§\d+§ hello runtime$")
+            self.assertEqual(messages[0]["content"], "hello runtime")
 
             tool_messages = [
                 {"role": "user", "content": "read a file"},
@@ -722,10 +740,13 @@ class MagicContextEngineTests(unittest.TestCase):
                 },
                 {"role": "tool", "tool_call_id": "call-real", "content": "done"},
             ]
+            selected_tools = engine.select_context(tool_messages, budget_tokens=4000)
+            self.assertRegex(selected_tools[0]["content"], r"^§\d+§ read a file$")
             self.assertEqual(
-                engine.select_context(tool_messages, budget_tokens=4000),
-                tool_messages,
+                selected_tools[1]["tool_calls"], tool_messages[1]["tool_calls"]
             )
+            self.assertRegex(selected_tools[2]["content"], r"^§\d+§ done$")
+            self.assertEqual(tool_messages[2]["content"], "done")
 
             payload = adapter.observe_request(
                 messages,

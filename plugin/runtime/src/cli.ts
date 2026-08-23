@@ -3,21 +3,13 @@
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { RuntimeMemory } from "./memory";
-import {
-	JsonDirectoryRuntimeMemoryStore,
-	MemoryRuntimeMemoryStore,
-} from "./memory-store";
 import {
 	createDefaultRuntime,
 	MagicContextRuntime,
 	type RuntimeCallEnvelope,
 	runtimePolicyFromEnvironment,
 } from "./runtime";
-import {
-	JsonDirectoryRuntimeStateStore,
-	MemoryRuntimeStateStore,
-} from "./state-store";
+import { RuntimeStorage } from "./storage";
 
 interface ErrorShape {
 	code: string;
@@ -49,8 +41,7 @@ export async function processRuntimeLine(
 function runtimeFromArguments(args: readonly string[]): MagicContextRuntime {
 	if (args.includes("--memory")) {
 		return new MagicContextRuntime({
-			store: new MemoryRuntimeStateStore(),
-			memory: new RuntimeMemory(new MemoryRuntimeMemoryStore()),
+			storage: RuntimeStorage.inMemory(),
 			policy: runtimePolicyFromEnvironment(),
 		});
 	}
@@ -59,12 +50,7 @@ function runtimeFromArguments(args: readonly string[]): MagicContextRuntime {
 		const stateDirectory = args[stateIndex + 1];
 		if (!stateDirectory) throw new Error("--state-dir requires a path");
 		return new MagicContextRuntime({
-			store: new JsonDirectoryRuntimeStateStore(stateDirectory),
-			memory: new RuntimeMemory(
-				new JsonDirectoryRuntimeMemoryStore(
-					resolve(stateDirectory, "memories"),
-				),
-			),
+			storage: RuntimeStorage.jsonDirectory(stateDirectory),
 			policy: runtimePolicyFromEnvironment(),
 		});
 	}

@@ -14,7 +14,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/auxiliary.ts src/compose.ts src/control-plane.ts src/runtime.ts src/state-store.ts src/memory.ts src/memory-store.ts src/validation.ts --root src --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
+    "build": "rm -rf dist && bun build src/index.ts src/cli.ts src/auxiliary.ts src/compose.ts src/control-plane.ts src/injection.ts src/runtime.ts src/scheduler.ts src/state-store.ts src/storage.ts src/tagging.ts src/memory.ts src/memory-store.ts src/validation.ts --root src --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "biome check src",

@@ -244,10 +244,18 @@ describe("context.compose", () => {
 		});
 
 		if (!("mutations" in plan)) throw new Error("expected ContextPlan");
-		expect(plan.mutations).toHaveLength(1);
-		expect(plan.mutations[0].operation).toBe("truncate_tool");
-		expect(plan.mutations[0].target.messageId).toBe("result");
-		expect(plan.mutations[0].target.blockId).toBe("result:block");
+		const truncation = plan.mutations.find(
+			(mutation) => mutation.operation === "truncate_tool",
+		);
+		expect(truncation?.target.messageId).toBe("result");
+		expect(truncation?.target.blockId).toBe("result:block");
+		expect(
+			plan.mutations.some(
+				(mutation) =>
+					mutation.operation === "prefix_tag" &&
+					mutation.target.blockId === "result:block",
+			),
+		).toBe(true);
 		expect(plan.accounting.estimatedInputTokens).toBeLessThanOrEqual(650);
 	});
 });

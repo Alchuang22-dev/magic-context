@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -10,24 +9,14 @@ import type {
 } from "@cortexkit/magic-context-core-plugin";
 
 import { RuntimeAuxiliaryCoordinator } from "./auxiliary";
-import {
-	composeContext,
-	DEFAULT_RUNTIME_POLICY,
-	deriveMemoryBudgetTokens,
-	type RuntimePolicyConfig,
-	type RuntimeTriggerInjection,
-} from "./compose";
+import { composeContext } from "./compose";
 import { RuntimeControlPlane } from "./control-plane";
-import { memoryProjectKey, RuntimeMemory } from "./memory";
-import {
-	JsonDirectoryRuntimeMemoryStore,
-	MemoryRuntimeMemoryStore,
-} from "./memory-store";
-import {
-	JsonDirectoryRuntimeStateStore,
-	type RuntimeSessionIdentity,
-	type RuntimeStateStore,
-} from "./state-store";
+import { RuntimeInjection } from "./injection";
+import { memoryProjectKey, type RuntimeMemory } from "./memory";
+import { normalizeRuntimePolicy, type RuntimePolicyConfig } from "./scheduler";
+import type { RuntimeSessionIdentity, RuntimeStateStore } from "./state-store";
+import { RuntimeStorage } from "./storage";
+import { RuntimeTagging } from "./tagging";
 import {
 	InvalidRuntimeRequestError,
 	validateCacheFeedbackRequest,
@@ -46,7 +35,8 @@ export interface RuntimeCallEnvelope {
 }
 
 export interface MagicContextRuntimeOptions {
-	store: RuntimeStateStore;
+	store?: RuntimeStateStore;
+	storage?: RuntimeStorage;
 	memory?: RuntimeMemory;
 	policy?: Partial<RuntimePolicyConfig>;
 	now?: () => number;
@@ -68,44 +58,6 @@ function identity(value: {
 	return { host: value.host, sessionId: value.sessionId };
 }
 
-function normalizedPolicy(
-	overrides: Partial<RuntimePolicyConfig> = {},
-): RuntimePolicyConfig {
-	return {
-		executeThresholdPercentage:
-			Number.isFinite(overrides.executeThresholdPercentage) &&
-			(overrides.executeThresholdPercentage ?? -1) >= 0
-				? Number(overrides.executeThresholdPercentage)
-				: DEFAULT_RUNTIME_POLICY.executeThresholdPercentage,
-		historyBudgetPercentage:
-			Number.isFinite(overrides.historyBudgetPercentage) &&
-			(overrides.historyBudgetPercentage ?? -1) >= 0 &&
-			(overrides.historyBudgetPercentage ?? 2) <= 1
-				? Number(overrides.historyBudgetPercentage)
-				: DEFAULT_RUNTIME_POLICY.historyBudgetPercentage,
-		memoryBudgetTokens:
-			Number.isFinite(overrides.memoryBudgetTokens) &&
-			(overrides.memoryBudgetTokens ?? -1) >= 0
-				? Number(overrides.memoryBudgetTokens)
-				: DEFAULT_RUNTIME_POLICY.memoryBudgetTokens,
-		memoryBudgetPercentage:
-			Number.isFinite(overrides.memoryBudgetPercentage) &&
-			(overrides.memoryBudgetPercentage ?? -1) >= 0 &&
-			(overrides.memoryBudgetPercentage ?? 2) <= 1
-				? Number(overrides.memoryBudgetPercentage)
-				: DEFAULT_RUNTIME_POLICY.memoryBudgetPercentage,
-		cacheTtl:
-			typeof overrides.cacheTtl === "string" && overrides.cacheTtl.length > 0
-				? overrides.cacheTtl
-				: DEFAULT_RUNTIME_POLICY.cacheTtl,
-		maxObservedTurns:
-			Number.isInteger(overrides.maxObservedTurns) &&
-			(overrides.maxObservedTurns ?? 0) > 0
-				? Number(overrides.maxObservedTurns)
-				: DEFAULT_RUNTIME_POLICY.maxObservedTurns,
-	};
-}
-
 /** Deep runtime Module behind the two-method agent-plugin Interface. */
 export class MagicContextRuntime {
 	readonly #store: RuntimeStateStore;
@@ -114,12 +66,20 @@ export class MagicContextRuntime {
 	readonly #memory: RuntimeMemory;
 	readonly #control: RuntimeControlPlane;
 	readonly #auxiliary: RuntimeAuxiliaryCoordinator;
+	readonly #tagging: RuntimeTagging;
+	readonly #injection: RuntimeInjection;
 
 	constructor(options: MagicContextRuntimeOptions) {
-		this.#store = options.store;
+		if (!options.storage && !options.store) {
+			throw new Error("MagicContextRuntime requires storage or a state store");
+		}
+		this.#store =
+			options.storage?.sessions ?? (options.store as RuntimeStateStore);
 		this.#memory =
-			options.memory ?? new RuntimeMemory(new MemoryRuntimeMemoryStore());
-		this.#policy = normalizedPolicy(options.policy);
+			options.memory ??
+			options.storage?.memory ??
+			RuntimeStorage.inMemory().memory;
+		this.#policy = normalizeRuntimePolicy(options.policy);
 		this.#now = options.now ?? Date.now;
 		this.#control = new RuntimeControlPlane(
 			this.#store,
@@ -129,6 +89,15 @@ export class MagicContextRuntime {
 		this.#auxiliary = new RuntimeAuxiliaryCoordinator(
 			this.#store,
 			this.#memory,
+			this.#now,
+		);
+		this.#tagging = new RuntimeTagging(this.#store, this.#now);
+		this.#injection = new RuntimeInjection(
+			this.#store,
+			this.#memory,
+			this.#auxiliary,
+			this.#tagging,
+			this.#policy,
 			this.#now,
 		);
 	}
@@ -182,49 +151,29 @@ export class MagicContextRuntime {
 		if (snapshot.lastCompose?.requestId === request.requestId) {
 			return snapshot.lastCompose.plan;
 		}
-		const callbacks = await this.#auxiliary.beforeCompose(request);
-		const current = await this.#store.readSession(sessionIdentity);
-		const memoryBudget = deriveMemoryBudgetTokens(
-			request,
-			current,
-			this.#policy,
-		);
-		const recalledMemory = await this.#memory.recallAndRender({
-			projectKey: memoryProjectKey(request),
-			query: latestUserQuery(request.messages),
-			budgetTokens: memoryBudget,
-			excludeIds: visibleMemoryIds(request.messages),
-			nowMs: this.#now(),
-		});
-		const contextLimit = Math.max(
-			0,
-			request.budgetTokens,
-			request.usage?.contextLimitTokens ?? 0,
-		);
-		const memoryInjection = this.#auxiliary.combineKnowledge(
-			recalledMemory,
-			current,
-			Math.floor(contextLimit * this.#policy.historyBudgetPercentage),
-		);
+		const injection = await this.#injection.prepare(request);
 		return this.#store.updateSession(sessionIdentity, (state) => {
 			if (state.lastCompose?.requestId === request.requestId) {
 				return { state, result: state.lastCompose.plan };
 			}
 			const nowMs = this.#now();
-			const triggerInjection = renderTriggerInjection(state);
 			const composed = composeContext(
 				request,
 				state,
 				this.#policy,
 				nowMs,
-				memoryInjection,
-				triggerInjection,
+				injection.knowledge,
+				injection.triggers,
+				injection.tagging,
 			);
 			const plan: ContextPlan =
-				callbacks.length > 0
-					? { ...composed.plan, callbacks: structuredClone(callbacks) }
+				injection.callbacks.length > 0
+					? {
+							...composed.plan,
+							callbacks: structuredClone(injection.callbacks),
+						}
 					: composed.plan;
-			const consumedTriggers = new Set(triggerInjection?.triggerIds ?? []);
+			const consumedTriggers = new Set(injection.triggers?.triggerIds ?? []);
 			const next = {
 				...state,
 				revision: state.revision + 1,
@@ -233,6 +182,7 @@ export class MagicContextRuntime {
 				deferredExecute: composed.deferredExecute,
 				activeMemoryFingerprint: composed.activeMemoryFingerprint,
 				activeMemoryEpoch: composed.activeMemoryEpoch,
+				activeTagFingerprint: composed.activeTagFingerprint,
 				pendingTriggers: state.pendingTriggers.filter(
 					(trigger) => !consumedTriggers.has(trigger.id),
 				),
@@ -366,62 +316,6 @@ export function runtimePolicyFromEnvironment(
 	};
 }
 
-function latestUserQuery(
-	messages: readonly import("@cortexkit/magic-context-core-plugin").CanonicalMessage[],
-): string {
-	const latest = [...messages]
-		.reverse()
-		.find((message) => message.role === "user");
-	if (!latest) return "";
-	return latest.content
-		.map((block) => {
-			if (block.kind === "text" || block.kind === "thinking") return block.text;
-			return "";
-		})
-		.filter(Boolean)
-		.join("\n");
-}
-
-function visibleMemoryIds(
-	messages: readonly import("@cortexkit/magic-context-core-plugin").CanonicalMessage[],
-): number[] {
-	const ids = new Set<number>();
-	for (const message of messages) {
-		for (const block of message.content) {
-			if (
-				(block.kind !== "text" && block.kind !== "thinking") ||
-				!block.text.includes("<project-memory>")
-			) {
-				continue;
-			}
-			for (const match of block.text.matchAll(/^#(\d+):/gm)) {
-				ids.add(Number(match[1]));
-			}
-		}
-	}
-	return [...ids];
-}
-
-function renderTriggerInjection(
-	state: import("./state-store").RuntimeSessionState,
-): RuntimeTriggerInjection | undefined {
-	if (state.pendingTriggers.length === 0) return undefined;
-	const triggers = state.pendingTriggers.slice(0, 4);
-	const content = `<magic-context-triggers>\n${triggers
-		.map((trigger) => `- ${trigger.content}`)
-		.join("\n")}\n</magic-context-triggers>`;
-	return {
-		content,
-		epoch: state.revision,
-		fingerprint: createHash("sha256").update(content).digest("hex"),
-		estimatedTokens: Math.max(
-			1,
-			Math.ceil(Buffer.byteLength(content, "utf8") / 3),
-		),
-		triggerIds: triggers.map((trigger) => trigger.id),
-	};
-}
-
 export function defaultRuntimeStateDirectory(
 	environment: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -439,10 +333,7 @@ export function createDefaultRuntime(
 ): MagicContextRuntime {
 	const directory = defaultRuntimeStateDirectory(environment);
 	return new MagicContextRuntime({
-		store: new JsonDirectoryRuntimeStateStore(directory),
-		memory: new RuntimeMemory(
-			new JsonDirectoryRuntimeMemoryStore(join(directory, "memories")),
-		),
+		storage: RuntimeStorage.jsonDirectory(directory),
 		policy: runtimePolicyFromEnvironment(environment),
 	});
 }

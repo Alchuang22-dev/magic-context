@@ -168,6 +168,33 @@ function parseOrdinalRanges(raw: string): number[] {
 	return [...result].sort((left, right) => left - right);
 }
 
+function parseDropReferences(raw: string): {
+	ordinals: number[];
+	tagNumbers: number[];
+} {
+	const ordinalTokens: string[] = [];
+	const tagTokens: string[] = [];
+	for (const token of raw.split(",")) {
+		if (token.includes("§")) tagTokens.push(token);
+		else ordinalTokens.push(token);
+	}
+	return {
+		ordinals:
+			ordinalTokens.length > 0
+				? parseOrdinalRanges(ordinalTokens.join(","))
+				: [],
+		tagNumbers:
+			tagTokens.length > 0 ? parseOrdinalRanges(tagTokens.join(",")) : [],
+	};
+}
+
+function tagsForOrdinal(state: RuntimeSessionState, ordinal: number): number[] {
+	return state.tags.records
+		.filter((record) => record.messageOrdinal === ordinal)
+		.map((record) => record.tagNumber)
+		.sort((left, right) => left - right);
+}
+
 function trigger(
 	kind: RuntimeAutomaticTrigger["kind"],
 	content: string,
@@ -523,6 +550,9 @@ export class RuntimeControlPlane {
 					sessionId: targetIdentity.sessionId,
 					revision: Math.max(current.revision, snapshot.revision) + 1,
 					lastCompose: undefined,
+					activeTagFingerprint: undefined,
+					tags: { nextTagNumber: 1, records: [] },
+					droppedTagNumbers: [],
 					recentToolResults: [],
 					auxiliary: {
 						...structuredClone(snapshot.auxiliary),
@@ -611,7 +641,11 @@ export class RuntimeControlPlane {
 				if (score <= 0) continue;
 				results.push({
 					score,
-					text: `[message] score=${score.toFixed(2)} ordinal=${message.ordinal} role=${message.role}\n${content.slice(0, 2_000)}`,
+					text: `[message] score=${score.toFixed(2)} ordinal=${message.ordinal} tags=${
+						tagsForOrdinal(state, message.ordinal)
+							.map((tag) => `§${tag}§`)
+							.join(",") || "none"
+					} role=${message.role}\n${content.slice(0, 2_000)}`,
 				});
 			}
 		}
@@ -737,6 +771,26 @@ export class RuntimeControlPlane {
 		state: RuntimeSessionState,
 	): string {
 		const messages = requestMessages(request, state);
+		const tagNumber = positiveInteger(request.arguments.tag);
+		if (tagNumber) {
+			const record = state.tags.records.find(
+				(candidate) => candidate.tagNumber === tagNumber,
+			);
+			if (!record) return `No stored content found for §${tagNumber}§.`;
+			const found = messages.find(
+				(message) =>
+					message.id === record.messageId ||
+					message.ordinal === record.messageOrdinal,
+			);
+			if (!found)
+				return `Raw source for §${tagNumber}§ is no longer in this session snapshot.`;
+			const block = found.content[record.blockIndex];
+			if (!block) return `Raw block for §${tagNumber}§ is unavailable.`;
+			return `§${tagNumber}§ [${found.ordinal}] ${found.role} ${block.kind}\n${canonicalBlockText(block)}`.slice(
+				0,
+				EXPAND_CHARACTER_BUDGET,
+			);
+		}
 		const ordinal = positiveInteger(request.arguments.message);
 		if (ordinal) {
 			const found = messages.find((message) => message.ordinal === ordinal);
@@ -751,7 +805,7 @@ export class RuntimeControlPlane {
 		const start = positiveInteger(request.arguments.start);
 		const end = positiveInteger(request.arguments.end);
 		if (!start || !end || end < start) {
-			return "Error: provide message=<ordinal>, or positive start/end with start <= end.";
+			return "Error: provide tag=<N>, message=<ordinal>, or positive start/end with start <= end.";
 		}
 		const selected = messages.filter(
 			(message) => message.ordinal >= start && message.ordinal <= end,
@@ -781,12 +835,20 @@ export class RuntimeControlPlane {
 		const raw = stringArg(request.arguments, "drop");
 		if (!raw) return "Error: 'drop' must be provided.";
 		let ordinals: number[];
+		let tagNumbers: number[];
 		try {
-			ordinals = parseOrdinalRanges(raw);
+			({ ordinals, tagNumbers } = parseDropReferences(raw));
 		} catch (error) {
 			return `Error: Invalid range syntax. ${error instanceof Error ? error.message : String(error)}`;
 		}
 		const messages = requestMessages(request, state);
+		const knownTagNumbers = new Set(
+			state.tags.records.map((record) => record.tagNumber),
+		);
+		const unknownTags = tagNumbers.filter((tag) => !knownTagNumbers.has(tag));
+		if (unknownTags.length > 0) {
+			return `Error: Unknown tag(s): ${unknownTags.map((tag) => `§${tag}§`).join(", ")}.`;
+		}
 		const targeted = new Set(ordinals);
 		const targetedCallIds = new Set<string>();
 		for (const message of messages) {
@@ -827,6 +889,17 @@ export class RuntimeControlPlane {
 		for (const message of messages.slice(-3)) {
 			protectedOrdinals.add(message.ordinal);
 		}
+		const unsafeTags = tagNumbers.filter((tag) => {
+			const record = state.tags.records.find(
+				(candidate) => candidate.tagNumber === tag,
+			);
+			return record ? protectedOrdinals.has(record.messageOrdinal) : false;
+		});
+		if (unsafeTags.length > 0) {
+			return `Error: Protected current-tail/system tag(s): ${unsafeTags
+				.map((tag) => `§${tag}§`)
+				.join(", ")}.`;
+		}
 		const unsafe = ordinals.filter((ordinal) => protectedOrdinals.has(ordinal));
 		if (unsafe.length > 0) {
 			return `Error: Protected current-tail/system ordinal(s): ${unsafe.join(", ")}.`;
@@ -835,19 +908,33 @@ export class RuntimeControlPlane {
 			identity(request),
 			(current) => {
 				const existing = new Set(current.droppedMessageOrdinals);
-				const fresh = ordinals.filter((ordinal) => !existing.has(ordinal));
-				current.droppedMessageOrdinals = [...existing, ...fresh].sort(
+				const freshOrdinals = ordinals.filter(
+					(ordinal) => !existing.has(ordinal),
+				);
+				current.droppedMessageOrdinals = [...existing, ...freshOrdinals].sort(
 					(left, right) => left - right,
 				);
-				if (fresh.length > 0) {
+				const existingTags = new Set(current.droppedTagNumbers);
+				const freshTags = tagNumbers.filter((tag) => !existingTags.has(tag));
+				current.droppedTagNumbers = [...existingTags, ...freshTags].sort(
+					(left, right) => left - right,
+				);
+				if (freshOrdinals.length > 0 || freshTags.length > 0) {
 					current.revision += 1;
 					current.lastCompose = undefined;
 				}
-				return { state: current, result: fresh };
+				return {
+					state: current,
+					result: { ordinals: freshOrdinals, tags: freshTags },
+				};
 			},
 		);
-		return added.length > 0
-			? `Queued persistent drop for ${added.map((id) => `§${id}§`).join(", ")}. Raw history remains available through ctx_expand.`
+		const addedReferences = [
+			...added.tags.map((tag) => `§${tag}§`),
+			...added.ordinals.map((ordinal) => `ordinal ${ordinal}`),
+		];
+		return addedReferences.length > 0
+			? `Queued persistent drop for ${addedReferences.join(", ")}. Raw history remains available through ctx_expand.`
 			: "All requested ordinals were already reduced. No new action is needed.";
 	}
 

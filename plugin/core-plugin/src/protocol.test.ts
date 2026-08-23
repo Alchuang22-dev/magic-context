@@ -58,6 +58,7 @@ describe("resolveCapabilities", () => {
 			requestBlocking: false,
 			systemSuffixInjection: false,
 			promptCacheFacts: false,
+			blockIndexMutations: false,
 		});
 	});
 });
@@ -125,5 +126,26 @@ describe("validateContextPlan", () => {
 				plan({ injections: [injection, injection] }),
 			),
 		).toThrow("duplicate injection identity");
+	});
+
+	test("validates request-local tag mutations at the adapter seam", () => {
+		const tagRequest = {
+			...request,
+			capabilities: resolveCapabilities({ blockIndexMutations: true }),
+		};
+		const tagPlan = plan();
+		tagPlan.mutations = [
+			{
+				target: { messageId: "m1", blockIndex: 0 },
+				operation: "prefix_tag",
+				content: "§7§",
+			},
+		];
+
+		expect(validateContextPlan(tagRequest, tagPlan)).toBe(tagPlan);
+		tagPlan.mutations[0].content = "tag-7";
+		expect(() => validateContextPlan(tagRequest, tagPlan)).toThrow(
+			"canonical §N§ token",
+		);
 	});
 });

@@ -1,47 +1,25 @@
 import {
-	applyTokenPressureFloor,
 	type ComposeContextRequest,
 	type ContextMutation,
 	type ContextPlan,
-	computeTokenPressure,
-	decideContextSchedule,
-	partitionContextBudget,
 	validateContextPlan,
 } from "@cortexkit/magic-context-core-plugin";
 import type {
 	CanonicalBlock,
 	CanonicalMessage,
-	ContextUsageObservation,
 } from "@cortexkit/magic-context-core-plugin/protocol";
 
+import { type RuntimePolicyConfig, resolveRuntimeSchedule } from "./scheduler";
 import type { RuntimeSessionState } from "./state-store";
 
+export {
+	DEFAULT_RUNTIME_POLICY,
+	deriveMemoryBudgetTokens,
+	normalizeRuntimePolicy,
+	type RuntimePolicyConfig,
+} from "./scheduler";
+
 const REDUCTION_MARKER = "\n...[reduced by Magic Context runtime]...\n";
-
-export interface RuntimePolicyConfig {
-	executeThresholdPercentage: number;
-	historyBudgetPercentage: number;
-	memoryBudgetTokens: number;
-	memoryBudgetPercentage: number;
-	cacheTtl: string;
-	maxObservedTurns: number;
-}
-
-export const DEFAULT_RUNTIME_POLICY: Readonly<RuntimePolicyConfig> =
-	Object.freeze({
-		executeThresholdPercentage: 65,
-		historyBudgetPercentage: 0.15,
-		memoryBudgetTokens: 8_000,
-		memoryBudgetPercentage: 0.1,
-		cacheTtl: "5m",
-		maxObservedTurns: 32,
-	});
-
-function finiteNonNegative(value: unknown): number {
-	return typeof value === "number" && Number.isFinite(value) && value > 0
-		? value
-		: 0;
-}
 
 function stableJson(value: unknown): string {
 	if (value === undefined) return "null";
@@ -330,19 +308,13 @@ function trimSelectedMessages(
 	return { mutations, estimatedTokens: Math.max(0, total) };
 }
 
-function observedUsage(
-	request: ComposeContextRequest,
-	state: RuntimeSessionState,
-): ContextUsageObservation {
-	return request.usage ?? state.latestUsage ?? {};
-}
-
 export interface ComposeContextOutcome {
 	plan: ContextPlan;
 	drainLatchActiveSinceMs?: number;
 	deferredExecute?: { reason: string };
 	activeMemoryFingerprint?: string;
 	activeMemoryEpoch?: number;
+	activeTagFingerprint?: string;
 }
 
 export interface RuntimeMemoryInjection {
@@ -363,35 +335,10 @@ export interface RuntimeTriggerInjection {
 	triggerIds: string[];
 }
 
-function configuredContextLimit(
-	request: ComposeContextRequest,
-	state: RuntimeSessionState,
-): number {
-	const observed = observedUsage(request, state);
-	return Math.floor(
-		finiteNonNegative(request.budgetTokens) ||
-			finiteNonNegative(observed.contextLimitTokens),
-	);
-}
-
-/** Maximum memory allocation for a compose call before recall is rendered. */
-export function deriveMemoryBudgetTokens(
-	request: ComposeContextRequest,
-	state: RuntimeSessionState,
-	config: RuntimePolicyConfig,
-): number {
-	const contextLimitTokens = configuredContextLimit(request, state);
-	if (contextLimitTokens === 0) return 0;
-	const percentageCap = Math.floor(
-		contextLimitTokens *
-			Math.max(0, Math.min(1, config.memoryBudgetPercentage)),
-	);
-	return partitionContextBudget({
-		contextLimitTokens,
-		executeThresholdPercentage: config.executeThresholdPercentage,
-		historyBudgetPercentage: config.historyBudgetPercentage,
-		memoryBudgetTokens: Math.min(config.memoryBudgetTokens, percentageCap),
-	}).memoryTokens;
+export interface RuntimeTaggingPlan {
+	mutations: ContextMutation[];
+	fingerprint: string;
+	estimatedTokens: number;
 }
 
 export function composeContext(
@@ -401,6 +348,7 @@ export function composeContext(
 	nowMs: number,
 	memoryInjection?: RuntimeMemoryInjection,
 	triggerInjection?: RuntimeTriggerInjection,
+	tagging?: RuntimeTaggingPlan,
 ): ComposeContextOutcome {
 	const explicitlyDropped = new Set(state.droppedMessageOrdinals);
 	const effectiveMessages = request.messages.filter(
@@ -410,18 +358,37 @@ export function composeContext(
 		explicitlyDropped.has(message.ordinal),
 	);
 	const forwardTokens = estimateCanonicalTokens(effectiveMessages);
-	const observed = observedUsage(request, state);
-	const configuredLimit = configuredContextLimit(request, state);
-	if (configuredLimit === 0) {
+	const injectionTokens =
+		(memoryInjection?.estimatedTokens ?? 0) +
+		(triggerInjection?.estimatedTokens ?? 0) +
+		(tagging?.estimatedTokens ?? 0);
+	const schedule = resolveRuntimeSchedule({
+		request,
+		state,
+		config,
+		nowMs,
+		forwardTokens,
+		memoryActive: Boolean(memoryInjection),
+		historyEstimatedTokens: memoryInjection?.historyEstimatedTokens ?? 0,
+		injectionTokens,
+		unpartitionedInjectionTokens:
+			(triggerInjection?.estimatedTokens ?? 0) +
+			(tagging?.estimatedTokens ?? 0),
+		midToolUse: hasOpenToolArc(effectiveMessages),
+	});
+	if (schedule.contextLimitTokens === 0) {
 		const plan: ContextPlan = {
 			protocolVersion: 1,
 			requestId: request.requestId,
 			decision: "defer",
 			retain: { messageIds: request.messages.map((message) => message.id) },
-			mutations: explicitDropMessages.map((message) => ({
-				target: { messageId: message.id },
-				operation: "drop" as const,
-			})),
+			mutations: [
+				...explicitDropMessages.map((message) => ({
+					target: { messageId: message.id },
+					operation: "drop" as const,
+				})),
+				...(tagging?.mutations ?? []),
+			],
 			injections: triggerInjection
 				? [
 						{
@@ -434,87 +401,27 @@ export function composeContext(
 				: [],
 			accounting: {
 				estimatedInputTokens:
-					forwardTokens + (triggerInjection?.estimatedTokens ?? 0),
+					forwardTokens +
+					(triggerInjection?.estimatedTokens ?? 0) +
+					(tagging?.estimatedTokens ?? 0),
 				hardLimitTokens: 0,
 				cacheDecision:
-					explicitDropMessages.length > 0 || triggerInjection
+					explicitDropMessages.length > 0 ||
+					triggerInjection ||
+					((tagging?.mutations.length ?? 0) > 0 &&
+						tagging?.fingerprint !== state.activeTagFingerprint)
 						? "bust_required"
 						: "hit_safe",
 			},
 			reason: "unknown-context-limit",
 		};
 		validateContextPlan(request, plan);
-		return { plan };
+		return { plan, activeTagFingerprint: tagging?.fingerprint };
 	}
-	const hardLimitTokens = Math.floor(
-		configuredLimit || Math.max(1, forwardTokens),
-	);
-	const observedPressure = computeTokenPressure(observed, {
-		softLimitTokens: hardLimitTokens,
-		hardLimitTokens,
-	});
-	const floored = applyTokenPressureFloor(
-		observedPressure,
-		forwardTokens,
-		hardLimitTokens,
-	);
-	const inputTokens = Math.max(
-		observedPressure.inputTokens,
-		floored.inputTokens,
-	);
-	const pressure = {
-		inputTokens,
-		percentage: Math.max(observedPressure.percentage, floored.percentage),
-		hardWallPercentage: Math.max(
-			observedPressure.hardWallPercentage,
-			(inputTokens / hardLimitTokens) * 100,
-		),
-	};
-	const schedule = decideContextSchedule({
-		config: {
-			executeThresholdPercentage: config.executeThresholdPercentage,
-		},
-		pressure,
-		session: {
-			lastResponseTimeMs: state.lastResponseTimeMs || nowMs,
-			cacheTtl: config.cacheTtl,
-		},
-		nowMs,
-		modelKey: request.modelKey,
-		contextLimitTokens: hardLimitTokens,
-		midToolUse: hasOpenToolArc(effectiveMessages),
-		deferredExecute: state.deferredExecute,
-		drainLatchActiveSinceMs: state.drainLatchActiveSinceMs,
-	});
-	const partition = partitionContextBudget({
-		contextLimitTokens: hardLimitTokens,
-		executeThresholdPercentage: schedule.threshold.percentage,
-		historyBudgetPercentage: config.historyBudgetPercentage,
-		memoryBudgetTokens: memoryInjection
-			? Math.min(
-					config.memoryBudgetTokens,
-					Math.floor(
-						hardLimitTokens *
-							Math.max(0, Math.min(1, config.memoryBudgetPercentage)),
-					),
-				)
-			: 0,
-	});
-	const scheduledTarget = Math.max(
-		1,
-		partition.workingTokens +
-			partition.historyTokens -
-			(memoryInjection?.historyEstimatedTokens ?? 0),
-	);
-	const injectionTokens =
-		(memoryInjection?.estimatedTokens ?? 0) +
-		(triggerInjection?.estimatedTokens ?? 0);
-	const deferredTarget = Math.max(
-		1,
-		Math.floor(hardLimitTokens * 0.9) - injectionTokens,
-	);
-	const targetTokens =
-		schedule.pass === "defer" ? deferredTarget : scheduledTarget;
+	const hardLimitTokens = schedule.hardLimitTokens;
+	const scheduleDecision = schedule.decision;
+	if (!scheduleDecision) throw new Error("scheduler returned no decision");
+	const targetTokens = schedule.targetTokens;
 	const selected =
 		forwardTokens <= targetTokens
 			? [...effectiveMessages]
@@ -530,13 +437,20 @@ export function composeContext(
 		trimmed.mutations.length > 0;
 	const memoryChanged =
 		memoryInjection?.fingerprint !== state.activeMemoryFingerprint;
+	const taggingChanged =
+		(tagging?.mutations.length ?? 0) > 0 &&
+		tagging?.fingerprint !== state.activeTagFingerprint;
 	const changed =
-		transcriptChanged || memoryChanged || Boolean(triggerInjection);
+		transcriptChanged ||
+		memoryChanged ||
+		taggingChanged ||
+		Boolean(triggerInjection);
 	const decision = !changed
-		? schedule.pass === "defer"
+		? scheduleDecision.pass === "defer"
 			? "defer"
 			: "serve"
-		: trimmed.estimatedTokens > targetTokens || schedule.pass === "emergency"
+		: trimmed.estimatedTokens > targetTokens ||
+				scheduleDecision.pass === "emergency"
 			? "safe_fallback"
 			: "serve";
 	const firstTail = selected.find((message) => message.role !== "system");
@@ -584,6 +498,7 @@ export function composeContext(
 				operation: "drop" as const,
 			})),
 			...trimmed.mutations,
+			...(tagging?.mutations ?? []),
 		],
 		injections,
 		accounting: {
@@ -591,14 +506,15 @@ export function composeContext(
 			hardLimitTokens,
 			cacheDecision: changed ? "bust_required" : "hit_safe",
 		},
-		reason: `schedule:${schedule.pass};pressure:${schedule.pressureBand};target:${targetTokens}`,
+		reason: `schedule:${scheduleDecision.pass};pressure:${scheduleDecision.pressureBand};target:${targetTokens}`,
 	};
 	validateContextPlan(request, plan);
 	return {
 		plan,
-		drainLatchActiveSinceMs: schedule.drainLatchActiveSinceMs,
-		deferredExecute: schedule.deferredExecute,
+		drainLatchActiveSinceMs: scheduleDecision.drainLatchActiveSinceMs,
+		deferredExecute: scheduleDecision.deferredExecute,
 		activeMemoryFingerprint: memoryInjection?.fingerprint,
 		activeMemoryEpoch: memoryInjection?.epoch,
+		activeTagFingerprint: tagging?.fingerprint,
 	};
 }

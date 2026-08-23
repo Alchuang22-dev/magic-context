@@ -91,6 +91,29 @@ export interface RuntimeCacheFeedback {
 	recentEventIds: string[];
 }
 
+export type RuntimeTagKind = "message" | "tool" | "file";
+
+/** Durable identity assigned by the host-neutral Tagging Module. */
+export interface RuntimeTagRecord {
+	tagNumber: number;
+	entityKey: string;
+	kind: RuntimeTagKind;
+	messageId: string;
+	messageOrdinal: number;
+	blockIndex: number;
+	blockId?: string;
+	callId?: string;
+	ownerMessageId?: string;
+	byteSize: number;
+	tokenCount: number;
+	createdAtMs: number;
+}
+
+export interface RuntimeTagState {
+	nextTagNumber: number;
+	records: RuntimeTagRecord[];
+}
+
 export type RuntimeAuxiliaryJobStatus =
 	| "queued"
 	| "leased"
@@ -161,6 +184,7 @@ export interface RuntimeSessionState extends RuntimeSessionIdentity {
 	deferredExecute?: DeferredExecuteIntent;
 	activeMemoryFingerprint?: string;
 	activeMemoryEpoch?: number;
+	activeTagFingerprint?: string;
 	recentObservationIds: string[];
 	observations: RuntimeTurnRecord[];
 	latestObservation?: ObserveTurnRequest;
@@ -174,6 +198,8 @@ export interface RuntimeSessionState extends RuntimeSessionIdentity {
 	lifecycleEvents: RuntimeLifecycleRecord[];
 	lifecycleMessages?: CanonicalMessage[];
 	cacheFeedback: RuntimeCacheFeedback;
+	tags: RuntimeTagState;
+	droppedTagNumbers: number[];
 	recentToolResults: ContextToolExecutionResult[];
 	auxiliary: RuntimeAuxiliaryState;
 	lastCompose?: {
@@ -225,6 +251,8 @@ export function emptyRuntimeSessionState(
 			cumulativeCacheWriteTokens: 0,
 			recentEventIds: [],
 		},
+		tags: { nextTagNumber: 1, records: [] },
+		droppedTagNumbers: [],
 		recentToolResults: [],
 		auxiliary: {
 			jobs: [],
@@ -325,6 +353,22 @@ function assertStoredState(
 						cumulativeCacheWriteTokens: 0,
 						recentEventIds: [],
 					},
+		tags:
+			state.tags && typeof state.tags === "object"
+				? {
+						nextTagNumber:
+							Number.isInteger(state.tags.nextTagNumber) &&
+							state.tags.nextTagNumber > 0
+								? state.tags.nextTagNumber
+								: 1,
+						records: Array.isArray(state.tags.records)
+							? state.tags.records
+							: [],
+					}
+				: { nextTagNumber: 1, records: [] },
+		droppedTagNumbers: Array.isArray(state.droppedTagNumbers)
+			? state.droppedTagNumbers
+			: [],
 		recentToolResults: Array.isArray(state.recentToolResults)
 			? state.recentToolResults
 			: [],

@@ -19,6 +19,19 @@ external Interface has a data plane and a control plane:
   Adapter. The runtime validates and publishes those results before advancing
   any history cursor or memory schedule.
 
+Internally, the runtime presents deep Tagging, Scheduler, Storage, Memory, and
+Injection Modules. `MagicContextRuntime` orchestrates those Interfaces; no
+host Adapter participates in their policy.
+
+## Stable tags
+
+The Tagging Module assigns monotonic `§N§` identities to text/file blocks and
+to tools by composite `(owner message, call id)` identity. A reused bare call
+id therefore cannot inherit an older tool's reduction state. `ctx_reduce`
+accepts tag tokens for block-level persistent mutation, while `ctx_expand`
+accepts `tag=<N>` and reads the retained raw source. Hosts only materialize the
+runtime's `prefix_tag` or `drop` mutation.
+
 ## Historian, Dreamer, and Sidekick
 
 Auxiliary inference uses a reverse-callback Interface: the runtime emits an
@@ -75,8 +88,8 @@ key to prevent cross-project leakage.
 - `ctx_search` performs hybrid memory recall plus lexical message/note search.
 - `ctx_memory` writes, updates, archives, merges, gets, and lists project
   memories.
-- `ctx_expand` reads the retained raw transcript even after `ctx_reduce` removes
-  ordinals from provider context.
+- `ctx_expand` reads by tag or ordinal from the retained raw transcript even
+  after `ctx_reduce` removes content from provider context.
 - `ctx_note` stores session notes and supports `tool:<name>` surface conditions.
 - Large successful tool results, ready smart notes, and cache pressure at or
   above 85% enqueue one-shot `tail_nudge` injections for the next compose.
